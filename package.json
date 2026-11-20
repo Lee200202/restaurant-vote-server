@@ -1,0 +1,12 @@
+{
+  "name": "restaurant-vote-server",
+  "version": "1.0.0",
+  "description": "匿名聚餐餐廳投票網站（含後端持久化記憶與 Google Maps 連結解析）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

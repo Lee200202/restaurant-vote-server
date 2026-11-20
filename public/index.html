@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>聚餐投票所 — 匿名餐廳投票</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;600;700;800&display=swap');
+
+    :root {
+      --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    body {
+      font-family: 'Inter', 'Noto Sans TC', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: linear-gradient(160deg, #fff8f1 0%, #faf9f6 45%, #f4f2ec 100%);
+      color: #1c1917;
+      letter-spacing: 0.01em;
+    }
+
+    .fluid-spotlight {
+      background: linear-gradient(125deg, #fff7ed 0%, #ffedd5 38%, #fef3c7 70%, #fffbeb 100%);
+      background-size: 240% 240%;
+      animation: ambientFlow 9s ease-in-out infinite;
+    }
+
+    @keyframes ambientFlow {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
+    .vote-bar-fill {
+      position: relative;
+      overflow: hidden;
+      transition: width 0.65s var(--ease-spring);
+    }
+
+    .vote-bar-fill::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+      transform: translateX(-100%);
+      animation: barShimmer 2.8s ease-in-out infinite;
+    }
+
+    @keyframes barShimmer {
+      0% { transform: translateX(-100%); }
+      55%, 100% { transform: translateX(130%); }
+    }
+
+    .card-enter {
+      animation: fluidEnter 0.42s var(--ease-spring) both;
+    }
+
+    @keyframes fluidEnter {
+      from { opacity: 0; transform: translateY(14px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .map-card {
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.34s var(--ease-spring), box-shadow 0.34s var(--ease-spring), border-color 0.3s ease;
+    }
+
+    .map-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -120%;
+      width: 60%;
+      height: 100%;
+      background: linear-gradient(105deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+      pointer-events: none;
+      transition: left 0.7s var(--ease-spring);
+    }
+
+    .map-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 14px 32px -10px rgba(28, 25, 23, 0.11), 0 4px 12px -4px rgba(249, 115, 22, 0.08);
+    }
+
+    .map-card:hover::before { left: 140%; }
+    .map-card:active { transform: translateY(-1px) scale(0.992); }
+
+    .tactile-surface {
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.22s var(--ease-spring), box-shadow 0.26s ease, border-color 0.25s ease, background-color 0.22s ease;
+    }
+
+    .tactile-surface:active { transform: scale(0.965); }
+
+    .ripple-wave {
+      position: absolute;
+      border-radius: 9999px;
+      pointer-events: none;
+      transform: translate(-50%, -50%) scale(0);
+      animation: rippleSpread 0.78s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes rippleSpread {
+      0% { transform: translate(-50%, -50%) scale(0); opacity: 0.55; }
+      55% { opacity: 0.22; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+    }
+
+    .card-bleed {
+      animation: cardBleedGlow 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes cardBleedGlow {
+      0% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.42), 0 12px 28px -8px rgba(249, 115, 22, 0.22); }
+      65% { box-shadow: 0 0 0 22px rgba(249, 115, 22, 0), 0 10px 24px -8px rgba(249, 115, 22, 0.1); }
+      100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0); }
+    }
+
+    .float-plus-one {
+      position: fixed;
+      pointer-events: none;
+      z-index: 60;
+      font-weight: 800;
+      font-size: 1.2rem;
+      color: #ea580c;
+      text-shadow: 0 4px 14px rgba(234, 88, 12, 0.3);
+      animation: floatUpFade 0.88s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes floatUpFade {
+      0% { opacity: 0; transform: translate(-50%, 4px) scale(0.65); }
+      24% { opacity: 1; transform: translate(-50%, -16px) scale(1.18); }
+      100% { opacity: 0; transform: translate(-50%, -52px) scale(0.95); }
+    }
+
+    .spark-dot {
+      position: fixed;
+      width: 7px;
+      height: 7px;
+      border-radius: 9999px;
+      pointer-events: none;
+      z-index: 59;
+      animation: sparkFly 0.72s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes sparkFly {
+      0% { opacity: 0.95; transform: translate(-50%, -50%) scale(1); }
+      100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.2); }
+    }
+
+    .count-pop { animation: countPop 0.42s var(--ease-bounce); }
+    @keyframes countPop {
+      0% { transform: scale(1); }
+      48% { transform: scale(1.36); }
+      100% { transform: scale(1); }
+    }
+
+    .dropzone-active {
+      border-color: #f97316 !important;
+      background-color: #fff7ed !important;
+      box-shadow: 0 0 0 8px rgba(249, 115, 22, 0.14);
+      transform: scale(1.012);
+    }
+
+    .map-thumb {
+      background:
+        radial-gradient(circle at 28% 30%, rgba(251, 146, 60, 0.24) 0%, transparent 55%),
+        radial-gradient(circle at 78% 72%, rgba(20, 184, 166, 0.22) 0%, transparent 58%),
+        linear-gradient(135deg, #f5f5f4 0%, #edece8 100%);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .map-thumb-grid {
+      background-image:
+        linear-gradient(to right, rgba(120, 113, 108, 0.08) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(120, 113, 108, 0.08) 1px, transparent 1px);
+      background-size: 16px 16px;
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-orange-100 selection:text-orange-900">
+
+  <!-- Minimal Top Header -->
+  <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-stone-200/70">
+    <div class="max-w-5xl mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-amber-500 text-white flex items-center justify-center shadow-sm shrink-0">
+          <i data-lucide="utensils" class="w-5 h-5"></i>
+        </div>
+        <div class="min-w-0">
+          <span class="font-bold text-stone-900 text-lg tracking-tight block truncate">聚餐投票所</span>
+          <div class="flex items-center gap-1.5 text-[11px] text-emerald-700 font-medium">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block"></span>
+            <span id="liveSyncLabel">雲端多人即時同步中</span>
+          </div>
+        </div>
+      </div>
+
+      <button
+        id="openSettingsBtn"
+        type="button"
+        class="tactile-surface inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium bg-stone-100 hover:bg-stone-200/80 text-stone-700 cursor-pointer shrink-0"
+        title="投票設定"
+      >
+        <i data-lucide="sliders-horizontal" class="w-4 h-4"></i>
+        <span>設定</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 sm:px-8 py-6 sm:py-9 space-y-6">
+
+    <!-- Wide Poll Hero & Scoreboard Card -->
+    <section class="bg-white/95 backdrop-blur-xs rounded-3xl border border-stone-200/80 shadow-sm p-6 sm:p-8 space-y-6">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div id="pollHeaderDisplay">
+            <h1 id="pollTitleText" class="text-2xl sm:text-3xl font-extrabold text-stone-900 tracking-tight leading-snug break-words">
+              這週末聚餐去哪吃？
+            </h1>
+            <p id="pollDescText" class="mt-1.5 text-sm sm:text-base text-stone-500 leading-relaxed break-words">
+              貼上或拖曳 Google Maps 連結，點擊卡片可直接開啟地圖，右側匿名投票
+            </p>
+          </div>
+
+          <form id="pollHeaderEditForm" class="hidden space-y-3">
+            <input
+              id="pollTitleInput"
+              type="text"
+              maxlength="80"
+              placeholder="輸入活動標題"
+              class="w-full px-4 py-2.5 rounded-2xl border border-stone-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none text-lg font-bold text-stone-900"
+              required
+            />
+            <input
+              id="pollDescInput"
+              type="text"
+              maxlength="140"
+              placeholder="簡短說明（選填）"
+              class="w-full px-4 py-2.5 rounded-2xl border border-stone-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none text-sm text-stone-700"
+            />
+            <div class="flex items-center gap-2">
+              <button type="submit" class="tactile-surface px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium cursor-pointer">儲存</button>
+              <button id="cancelPollEditBtn" type="button" class="tactile-surface px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium cursor-pointer">取消</button>
+            </div>
+          </form>
+        </div>
+
+        <button
+          id="editPollHeaderBtn"
+          type="button"
+          class="tactile-surface p-2.5 rounded-xl text-stone-400 hover:text-stone-700 hover:bg-stone-100 shrink-0 cursor-pointer"
+          title="編輯標題"
+          aria-label="編輯標題"
+        >
+          <i data-lucide="pencil" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Largest Spotlight Box: Current Top Voted -->
+      <div id="leaderSpotlight" class="fluid-spotlight relative overflow-hidden rounded-2xl border border-amber-200/90 p-6 sm:p-7 transition-all duration-300">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div class="min-w-0 space-y-1.5">
+            <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-200/80 text-amber-950 text-xs font-bold tracking-wide">
+              <i data-lucide="crown" class="w-3.5 h-3.5"></i>
+              <span>目前最高票</span>
+            </div>
+            <div id="statLeaderName" class="text-2xl sm:text-3xl font-extrabold text-stone-900 tracking-tight leading-snug break-words">
+              尚未有候選餐廳
+            </div>
+            <div id="statLeaderSub" class="text-sm text-amber-900/75 leading-relaxed">
+              新增餐廳並投下第一票後，冠軍會在這裡即時揭曉
+            </div>
+          </div>
+
+          <div class="flex items-center gap-4 shrink-0">
+            <a
+              id="leaderMapLink"
+              href="https://maps.google.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hidden tactile-surface inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white/90 hover:bg-white text-teal-700 border border-amber-200/80 text-xs sm:text-sm font-semibold shadow-xs"
+            >
+              <i data-lucide="map-pin" class="w-4 h-4"></i>
+              <span>開啟地圖</span>
+            </a>
+            <div class="text-right">
+              <div id="statLeaderVotes" class="text-3xl sm:text-4xl font-extrabold text-orange-600 leading-none">0</div>
+              <div class="text-xs font-medium text-amber-800/80 mt-1">獲得票數</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Left & Right Stats -->
+      <div class="grid grid-cols-2 gap-4">
+        <div class="rounded-2xl bg-stone-50/90 border border-stone-200/70 px-5 py-4 sm:px-6 sm:py-5 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs sm:text-sm font-medium text-stone-500">候選餐廳</div>
+            <div id="statRestaurantCount" class="text-2xl sm:text-3xl font-extrabold text-stone-900 mt-0.5">0</div>
+          </div>
+          <div class="w-11 h-11 rounded-2xl bg-white border border-stone-200/80 text-stone-500 flex items-center justify-center shrink-0">
+            <i data-lucide="store" class="w-5 h-5"></i>
+          </div>
+        </div>
+
+        <div class="rounded-2xl bg-stone-50/90 border border-stone-200/70 px-5 py-4 sm:px-6 sm:py-5 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs sm:text-sm font-medium text-stone-500">累計總票數</div>
+            <div id="statTotalVotes" class="text-2xl sm:text-3xl font-extrabold text-orange-600 mt-0.5">0</div>
+          </div>
+          <div class="w-11 h-11 rounded-2xl bg-orange-50 border border-orange-200/70 text-orange-600 flex items-center justify-center shrink-0">
+            <i data-lucide="thumbs-up" class="w-5 h-5"></i>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Drag-and-Drop / Paste Google Maps URL Card -->
+    <section id="dropZone" class="bg-white/95 rounded-3xl border-2 border-dashed border-stone-200 hover:border-orange-300 shadow-sm p-5 sm:p-6 transition-all duration-300">
+      <form id="addRestaurantForm" class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+        <div class="relative flex-1">
+          <div class="absolute inset-y-0 left-4 flex items-center pointer-events-none text-teal-600">
+            <i data-lucide="map-pin" class="w-5 h-5"></i>
+          </div>
+          <input
+            id="urlInput"
+            type="text"
+            placeholder="貼上 Google Maps 連結（支援 maps.app.goo.gl 短網址），或直接拖拉網址..."
+            class="w-full pl-12 pr-4 py-3.5 rounded-2xl border border-stone-200 bg-stone-50/70 focus:bg-white focus:border-orange-500 focus:ring-4 focus:ring-orange-100 outline-none text-sm sm:text-base text-stone-900 placeholder:text-stone-400 transition-all"
+            required
+          />
+        </div>
+        <button
+          id="submitRestaurantBtn"
+          type="submit"
+          class="tactile-surface inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-2xl bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white font-semibold text-sm sm:text-base shadow-sm hover:shadow-md cursor-pointer shrink-0"
+        >
+          <i data-lucide="plus" class="w-5 h-5"></i>
+          <span id="submitBtnLabel">新增餐廳</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- Restaurant Leaderboard -->
+    <section class="space-y-4">
+      <div class="flex items-center justify-between gap-3 px-1">
+        <div class="flex items-center gap-2.5">
+          <h2 class="font-bold text-stone-900 text-lg sm:text-xl">候選餐廳</h2>
+          <span id="voteModeBadge" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-stone-200/70 text-stone-600">可複選</span>
+        </div>
+
+        <div class="inline-flex rounded-xl bg-stone-200/70 p-1 text-xs font-medium">
+          <button id="sortVotesBtn" type="button" class="px-3.5 py-1.5 rounded-lg bg-white text-stone-900 shadow-sm transition-all cursor-pointer">票數高到低</button>
+          <button id="sortNewestBtn" type="button" class="px-3.5 py-1.5 rounded-lg text-stone-600 hover:text-stone-900 transition-all cursor-pointer">最新新增</button>
+        </div>
+      </div>
+
+      <div id="restaurantList" class="space-y-4"></div>
+
+      <div id="emptyState" class="bg-white/85 rounded-3xl border border-dashed border-stone-300/90 py-14 px-6 text-center">
+        <div class="w-14 h-14 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center mx-auto mb-3.5">
+          <i data-lucide="map-pinned" class="w-7 h-7"></i>
+        </div>
+        <p class="font-bold text-stone-800 text-base">還沒有候選餐廳</p>
+        <p class="text-sm text-stone-500 mt-1">貼上或拖曳 Google Maps 連結，伺服器會自動擷取名稱與地址並同步給所有人</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Edit Modal -->
+  <div id="editModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-stone-900/45 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-3xl shadow-xl border border-stone-200 max-w-md w-full p-6 card-enter">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold text-stone-900">編輯餐廳資訊</h3>
+        <button id="closeEditModalBtn" type="button" class="p-1.5 rounded-xl text-stone-400 hover:text-stone-700 hover:bg-stone-100 cursor-pointer"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <form id="editRestaurantForm" class="space-y-4">
+        <input type="hidden" id="editItemId" />
+        <div>
+          <label for="editNameInput" class="block text-xs font-medium text-stone-500 mb-1">餐廳名稱</label>
+          <input id="editNameInput" type="text" maxlength="60" class="w-full px-4 py-2.5 rounded-xl border border-stone-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none text-sm" required />
+        </div>
+        <div>
+          <label for="editAddressInput" class="block text-xs font-medium text-stone-500 mb-1">地址（選填）</label>
+          <input id="editAddressInput" type="text" maxlength="120" class="w-full px-4 py-2.5 rounded-xl border border-stone-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none text-sm" />
+        </div>
+        <div>
+          <label for="editUrlInput" class="block text-xs font-medium text-stone-500 mb-1">Google Maps 連結</label>
+          <input id="editUrlInput" type="url" class="w-full px-4 py-2.5 rounded-xl border border-stone-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none text-sm" required />
+        </div>
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button id="cancelEditModalBtn" type="button" class="tactile-surface px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium cursor-pointer">取消</button>
+          <button type="submit" class="tactile-surface px-5 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium cursor-pointer">儲存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete Modal -->
+  <div id="deleteModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-stone-900/45 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-3xl shadow-xl border border-stone-200 max-w-sm w-full p-6 card-enter">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-10 h-10 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shrink-0"><i data-lucide="trash-2" class="w-5 h-5"></i></div>
+        <div class="min-w-0">
+          <h3 class="text-base font-bold text-stone-900">移除這間餐廳？</h3>
+          <p id="deleteItemNameText" class="text-xs text-stone-500 mt-0.5 truncate"></p>
+        </div>
+      </div>
+      <p class="text-sm text-stone-600 mb-5">移除後所有人的畫面都會同步清除此項目。</p>
+      <div class="flex items-center justify-end gap-2">
+        <button id="cancelDeleteBtn" type="button" class="tactile-surface px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium cursor-pointer">取消</button>
+        <button id="confirmDeleteBtn" type="button" class="tactile-surface px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-medium cursor-pointer">確認移除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-stone-900/45 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-3xl shadow-xl border border-stone-200 max-w-md w-full p-6 card-enter">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold text-stone-900">投票設定</h3>
+        <button id="closeSettingsModalBtn" type="button" class="p-1.5 rounded-xl text-stone-400 hover:text-stone-700 hover:bg-stone-100 cursor-pointer"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <form id="settingsForm" class="space-y-5">
+        <div class="p-4 rounded-2xl bg-stone-50 border border-stone-200/80 space-y-2.5">
+          <div class="text-sm font-semibold text-stone-900">投票規則</div>
+          <label class="flex items-center gap-2.5 text-sm text-stone-700 cursor-pointer">
+            <input type="radio" name="voteMode" value="multi" class="accent-orange-600 w-4 h-4" />
+            <span>可複選（可投多間）</span>
+          </label>
+          <label class="flex items-center gap-2.5 text-sm text-stone-700 cursor-pointer">
+            <input type="radio" name="voteMode" value="single" class="accent-orange-600 w-4 h-4" />
+            <span>一人一票（可隨時改投）</span>
+          </label>
+        </div>
+        <div class="pt-2 border-t border-stone-100 flex items-center justify-between gap-2">
+          <button id="clearAllDataBtn" type="button" class="text-xs font-medium text-red-600 hover:text-red-700 hover:underline cursor-pointer">清空所有餐廳</button>
+          <div class="flex items-center gap-2">
+            <button id="cancelSettingsBtn" type="button" class="tactile-surface px-4 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium cursor-pointer">取消</button>
+            <button type="submit" class="tactile-surface px-5 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium cursor-pointer">儲存</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex flex-col items-center gap-2 w-[90vw] max-w-sm"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const VOTER_KEY = 'restaurant_vote_anon_id_v1';
+      let state = { title: '這週末聚餐去哪吃？', description: '', voteMode: 'multi', sortBy: 'votes', restaurants: [] };
+      let pendingDeleteId = null;
+      let lastAnimatedId = null;
+
+      function getOrCreateAnonId() {
+        try {
+          let id = window.localStorage.getItem(VOTER_KEY);
+          if (!id) {
+            id = 'anon_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+            window.localStorage.setItem(VOTER_KEY, id);
+          }
+          return id;
+        } catch (e) {
+          return 'anon_' + Math.random().toString(36).slice(2, 10);
+        }
+      }
+
+      const currentAnonId = getOrCreateAnonId();
+
+      async function apiFetch(path, options) {
+        const res = await fetch(path, Object.assign({
+          headers: { 'Content-Type': 'application/json' }
+        }, options || {}));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '請求失敗');
+        return data;
+      }
+
+      async function syncFromServer() {
+        try {
+          const remote = await apiFetch('/api/state');
+          state = remote;
+          render();
+        } catch (e) {
+          // Keep current view if momentarily disconnected
+        }
+      }
+
+      function spawnRipple(targetEl, clientX, clientY, color) {
+        if (!targetEl) return;
+        const rect = targetEl.getBoundingClientRect();
+        const size = Math.max(rect.width, rect.height) * 2.5;
+        const x = (typeof clientX === 'number' && clientX > 0) ? (clientX - rect.left) : rect.width / 2;
+        const y = (typeof clientY === 'number' && clientY > 0) ? (clientY - rect.top) : rect.height / 2;
+        const wave = document.createElement('span');
+        wave.className = 'ripple-wave';
+        wave.style.width = size + 'px';
+        wave.style.height = size + 'px';
+        wave.style.left = x + 'px';
+        wave.style.top = y + 'px';
+        wave.style.background = color || 'rgba(249, 115, 22, 0.3)';
+        targetEl.appendChild(wave);
+        setTimeout(() => { if (wave.parentNode) wave.parentNode.removeChild(wave); }, 800);
+      }
+
+      function spawnVoteBurst(clientX, clientY, addedVote) {
+        const label = document.createElement('div');
+        label.className = 'float-plus-one';
+        label.textContent = addedVote ? '+1' : '-1';
+        label.style.left = clientX + 'px';
+        label.style.top = (clientY - 12) + 'px';
+        if (!addedVote) label.style.color = '#78716c';
+        document.body.appendChild(label);
+        setTimeout(() => { if (label.parentNode) label.parentNode.removeChild(label); }, 900);
+        if (!addedVote) return;
+        const colors = ['#f97316', '#f59e0b', '#14b8a6', '#fb923c', '#fbbf24'];
+        for (let i = 0; i < 7; i++) {
+          const spark = document.createElement('span');
+          spark.className = 'spark-dot';
+          const angle = (Math.PI * 2 * i) / 7 + (Math.random() * 0.4 - 0.2);
+          const dist = 28 + Math.random() * 26;
+          spark.style.left = clientX + 'px';
+          spark.style.top = clientY + 'px';
+          spark.style.backgroundColor = colors[i % colors.length];
+          spark.style.setProperty('--dx', Math.round(Math.cos(angle) * dist) + 'px');
+          spark.style.setProperty('--dy', Math.round(Math.sin(angle) * dist) + 'px');
+          document.body.appendChild(spark);
+          setTimeout(() => { if (spark.parentNode) spark.parentNode.removeChild(spark); }, 760);
+        }
+      }
+
+      document.addEventListener('pointerdown', function (e) {
+        const surface = e.target.closest('.tactile-surface, .map-card');
+        if (!surface) return;
+        const isDarkBtn = surface.classList.contains('bg-orange-600') || surface.classList.contains('bg-red-600');
+        spawnRipple(surface, e.clientX, e.clientY, isDarkBtn ? 'rgba(255,255,255,0.44)' : 'rgba(249,115,22,0.22)');
+      });
+
+      function showToast(message, type) {
+        const container = document.getElementById('toastContainer');
+        if (!container) return;
+        const toast = document.createElement('div');
+        toast.className = (type === 'error' ? 'bg-red-600' : 'bg-stone-900') + ' text-white px-4 py-2.5 rounded-2xl shadow-lg text-xs sm:text-sm font-medium card-enter pointer-events-auto';
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => {
+          toast.style.opacity = '0';
+          toast.style.transition = 'opacity 0.25s ease';
+          setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 260);
+        }, 2200);
+      }
+
+      function copyText(text, msg) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => showToast(msg || '已複製連結！')).catch(() => fallbackCopy(text, msg));
+        } else {
+          fallbackCopy(text, msg);
+        }
+      }
+
+      function fallbackCopy(text, msg) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); showToast(msg || '已複製連結！'); } catch (e) { showToast('複製失敗', 'error'); }
+        document.body.removeChild(ta);
+      }
+
+      function escapeHtml(str) {
+        return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      function formatDisplayLink(url) {
+        try {
+          const u = new URL(url);
+          const host = u.hostname.replace(/^www\./, '');
+          return (host === 'google.com' && u.pathname.startsWith('/maps')) ? 'google.com/maps' : host;
+        } catch (e) { return 'maps.google.com'; }
+      }
+
+      function getSortedRestaurants() {
+        const list = (state.restaurants || []).slice();
+        if (state.sortBy === 'newest') {
+          list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        } else {
+          list.sort((a, b) => ((b.votes || 0) !== (a.votes || 0)) ? ((b.votes || 0) - (a.votes || 0)) : ((a.createdAt || 0) - (b.createdAt || 0)));
+        }
+        return list;
+      }
+
+      function render() {
+        document.getElementById('pollTitleText').textContent = state.title || '聚餐投票所';
+        document.getElementById('pollDescText').textContent = state.description || '';
+        document.getElementById('voteModeBadge').textContent = state.voteMode === 'single' ? '一人一票' : '可複選';
+
+        const restaurants = state.restaurants || [];
+        const totalRestaurants = restaurants.length;
+        const totalVotes = restaurants.reduce((s, r) => s + (r.votes || 0), 0);
+        const maxVotes = restaurants.reduce((m, r) => Math.max(m, r.votes || 0), 0);
+
+        document.getElementById('statRestaurantCount').textContent = String(totalRestaurants);
+        document.getElementById('statTotalVotes').textContent = String(totalVotes);
+
+        const leaders = maxVotes > 0 ? restaurants.filter(r => (r.votes || 0) === maxVotes) : [];
+        const leaderNameEl = document.getElementById('statLeaderName');
+        const leaderSubEl = document.getElementById('statLeaderSub');
+        const leaderVotesEl = document.getElementById('statLeaderVotes');
+        const leaderMapLink = document.getElementById('leaderMapLink');
+
+        if (leaders.length === 1) {
+          const pct = totalVotes > 0 ? Math.round((leaders[0].votes / totalVotes) * 100) : 0;
+          leaderNameEl.textContent = leaders[0].name;
+          leaderSubEl.textContent = (leaders[0].address ? leaders[0].address + '・' : '') + '得票率 ' + pct + '%';
+          leaderVotesEl.textContent = String(leaders[0].votes);
+          leaderMapLink.href = leaders[0].url;
+          leaderMapLink.classList.remove('hidden');
+          leaderMapLink.classList.add('inline-flex');
+        } else if (leaders.length > 1) {
+          leaderNameEl.textContent = leaders.map(l => l.name).slice(0, 2).join(' / ') + (leaders.length > 2 ? ' 等 ' + leaders.length + ' 間' : '');
+          leaderSubEl.textContent = '目前同票並列第一（各 ' + maxVotes + ' 票）';
+          leaderVotesEl.textContent = String(maxVotes);
+          leaderMapLink.classList.add('hidden');
+          leaderMapLink.classList.remove('inline-flex');
+        } else {
+          leaderNameEl.textContent = totalRestaurants > 0 ? '等待第一張選票' : '尚未有候選餐廳';
+          leaderSubEl.textContent = totalRestaurants > 0 ? '點擊下方卡片右側投票，點擊卡片本體可開啟 Google Maps' : '新增餐廳並投下第一票後，冠軍會在這裡即時揭曉';
+          leaderVotesEl.textContent = '0';
+          leaderMapLink.classList.add('hidden');
+          leaderMapLink.classList.remove('inline-flex');
+        }
+
+        const sortVotesBtn = document.getElementById('sortVotesBtn');
+        const sortNewestBtn = document.getElementById('sortNewestBtn');
+        if (state.sortBy === 'newest') {
+          sortNewestBtn.className = 'px-3.5 py-1.5 rounded-lg bg-white text-stone-900 shadow-sm transition-all cursor-pointer';
+          sortVotesBtn.className = 'px-3.5 py-1.5 rounded-lg text-stone-600 hover:text-stone-900 transition-all cursor-pointer';
+        } else {
+          sortVotesBtn.className = 'px-3.5 py-1.5 rounded-lg bg-white text-stone-900 shadow-sm transition-all cursor-pointer';
+          sortNewestBtn.className = 'px-3.5 py-1.5 rounded-lg text-stone-600 hover:text-stone-900 transition-all cursor-pointer';
+        }
+
+        const listEl = document.getElementById('restaurantList');
+        const emptyEl = document.getElementById('emptyState');
+        if (totalRestaurants === 0) {
+          listEl.innerHTML = '';
+          emptyEl.classList.remove('hidden');
+          if (window.lucide) window.lucide.createIcons();
+          return;
+        }
+
+        emptyEl.classList.add('hidden');
+        const sorted = getSortedRestaurants();
+        listEl.innerHTML = sorted.map((item, idx) => {
+          const votes = item.votes || 0;
+          const pct = totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
+          const isLeader = maxVotes > 0 && votes === maxVotes;
+          const hasVoted = Array.isArray(item.voters) && item.voters.includes(currentAnonId);
+          const isFresh = lastAnimatedId === item.id;
+          const cardStyle = isLeader ? 'border-amber-300/90 bg-gradient-to-r from-amber-50/40 via-white to-white shadow-sm' : 'border-stone-200/90 bg-white shadow-xs';
+          const rankBadge = isLeader
+            ? '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900"><i data-lucide="crown" class="w-3.5 h-3.5"></i>最高票</span>'
+            : '<span class="inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs font-bold bg-stone-100 text-stone-500">#' + (idx + 1) + '</span>';
+          const voteBtnStyle = hasVoted
+            ? 'bg-orange-600 text-white border-orange-600 shadow-md shadow-orange-500/25 hover:bg-orange-700'
+            : 'bg-stone-50 text-stone-800 border-stone-200 hover:border-orange-400 hover:bg-orange-50 hover:text-orange-700';
+
+          return (
+            '<article class="map-card card-enter rounded-3xl border p-4 sm:p-5 cursor-pointer ' + cardStyle + '" data-id="' + escapeHtml(item.id) + '" data-url="' + escapeHtml(item.url) + '" title="點擊整張卡片開啟 Google Maps">' +
+              '<div class="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">' +
+                '<div class="map-thumb map-thumb-grid w-full sm:w-28 h-24 sm:h-28 rounded-2xl border border-stone-200/80 flex flex-col items-center justify-center shrink-0">' +
+                  '<div class="w-11 h-11 rounded-2xl bg-white/95 shadow-sm border border-stone-200/60 flex items-center justify-center text-teal-600"><i data-lucide="map-pin" class="w-5 h-5"></i></div>' +
+                  '<span class="mt-1.5 text-[11px] font-semibold text-stone-600 bg-white/85 px-2 py-0.5 rounded-full">開啟地圖 ↗</span>' +
+                '</div>' +
+                '<div class="flex-1 min-w-0">' +
+                  '<div class="flex flex-wrap items-center gap-2 mb-1">' + rankBadge + '<h3 class="text-lg sm:text-xl font-bold text-stone-900 leading-snug break-words">' + escapeHtml(item.name) + '</h3></div>' +
+                  (item.address ? '<p class="text-sm text-stone-600 leading-relaxed flex items-start gap-1.5 mt-1 break-words"><i data-lucide="navigation" class="w-3.5 h-3.5 text-stone-400 mt-1 shrink-0"></i><span>' + escapeHtml(item.address) + '</span></p>' : '<p class="text-xs text-stone-400 mt-1">點擊卡片前往 Google Maps 查看完整地址與評價</p>') +
+                  '<div class="mt-2 flex flex-wrap items-center gap-2">' +
+                    '<span class="inline-flex items-center gap-1 text-xs sm:text-sm font-medium text-teal-700"><i data-lucide="external-link" class="w-3.5 h-3.5"></i><span>' + escapeHtml(formatDisplayLink(item.url)) + '</span></span>' +
+                    '<button type="button" data-action="copy" data-id="' + escapeHtml(item.id) + '" class="tactile-surface inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/70 cursor-pointer"><i data-lucide="copy" class="w-3 h-3"></i><span>複製連結</span></button>' +
+                    '<button type="button" data-action="edit" data-id="' + escapeHtml(item.id) + '" class="tactile-surface inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-stone-600 cursor-pointer"><i data-lucide="pencil" class="w-3 h-3"></i><span>編輯</span></button>' +
+                    '<button type="button" data-action="delete" data-id="' + escapeHtml(item.id) + '" class="tactile-surface inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-stone-100 hover:bg-red-50 text-stone-500 hover:text-red-600 cursor-pointer"><i data-lucide="trash-2" class="w-3 h-3"></i><span>刪除</span></button>' +
+                  '</div>' +
+                  '<div class="mt-3.5 flex items-center gap-3">' +
+                    '<div class="flex-1 h-2.5 bg-stone-100 rounded-full overflow-hidden"><div class="vote-bar-fill h-full rounded-full ' + (isLeader ? 'bg-gradient-to-r from-amber-400 via-orange-500 to-amber-500' : 'bg-orange-400/90') + '" style="width: ' + pct + '%"></div></div>' +
+                    '<span class="text-xs font-semibold text-stone-500 w-9 text-right shrink-0">' + pct + '%</span>' +
+                  '</div>' +
+                '</div>' +
+                '<button type="button" data-action="vote" data-id="' + escapeHtml(item.id) + '" class="tactile-surface w-full sm:w-auto sm:min-w-[112px] py-3.5 px-5 rounded-2xl border font-bold flex sm:flex-col items-center justify-center gap-2 sm:gap-1 cursor-pointer shrink-0 ' + voteBtnStyle + '">' +
+                  '<div class="flex items-center gap-1.5 text-xl sm:text-2xl leading-none ' + (isFresh ? 'count-pop' : '') + '"><i data-lucide="thumbs-up" class="w-5 h-5"></i><span>' + votes + '</span></div>' +
+                  '<span class="text-xs font-medium opacity-90">' + (hasVoted ? '已投票' : '投一票') + '</span>' +
+                '</button>' +
+              '</div>' +
+            '</article>'
+          );
+        }).join('');
+
+        lastAnimatedId = null;
+        if (window.lucide) window.lucide.createIcons();
+      }
+
+      function openModal(id) {
+        const el = document.getElementById(id);
+        if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
+      }
+      function closeModal(id) {
+        const el = document.getElementById(id);
+        if (el) { el.classList.add('hidden'); el.classList.remove('flex'); }
+      }
+
+      async function handleAddInput(rawInput) {
+        const btn = document.getElementById('submitRestaurantBtn');
+        const label = document.getElementById('submitBtnLabel');
+        btn.disabled = true;
+        label.textContent = '解析中...';
+        try {
+          const data = await apiFetch('/api/restaurants', {
+            method: 'POST',
+            body: JSON.stringify({ input: rawInput })
+          });
+          state = data.state;
+          lastAnimatedId = data.item.id;
+          render();
+          showToast('已加入「' + data.item.name + '」');
+          return true;
+        } catch (err) {
+          showToast(err.message || '新增失敗', 'error');
+          return false;
+        } finally {
+          btn.disabled = false;
+          label.textContent = '新增餐廳';
+        }
+      }
+
+      document.getElementById('addRestaurantForm').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const urlInput = document.getElementById('urlInput');
+        if (await handleAddInput(urlInput.value)) urlInput.value = '';
+      });
+
+      const dropZone = document.getElementById('dropZone');
+      ['dragenter', 'dragover'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('dropzone-active'); }));
+      ['dragleave', 'drop'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('dropzone-active'); }));
+      dropZone.addEventListener('drop', async function (e) {
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        const droppedText = dt.getData('text/uri-list') || dt.getData('text/plain') || '';
+        const cleaned = droppedText.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).join('\n');
+        if (cleaned) {
+          spawnRipple(dropZone, e.clientX, e.clientY, 'rgba(249,115,22,0.25)');
+          await handleAddInput(cleaned);
+        } else {
+          showToast('請拖曳有效的 Google Maps 連結', 'error');
+        }
+      });
+
+      document.getElementById('restaurantList').addEventListener('click', async function (e) {
+        const btn = e.target.closest('button[data-action]');
+        if (btn) {
+          e.stopPropagation();
+          const action = btn.getAttribute('data-action');
+          const id = btn.getAttribute('data-id');
+          const item = (state.restaurants || []).find(r => r.id === id);
+          if (!item) return;
+
+          if (action === 'vote') {
+            try {
+              const res = await apiFetch('/api/restaurants/' + encodeURIComponent(id) + '/vote', {
+                method: 'POST',
+                body: JSON.stringify({ voterId: currentAnonId })
+              });
+              spawnVoteBurst(e.clientX, e.clientY, res.addedVote);
+              state = res.state;
+              lastAnimatedId = id;
+              render();
+              requestAnimationFrame(() => {
+                const card = document.querySelector('article[data-id="' + id + '"]');
+                if (card) { card.classList.remove('card-bleed'); void card.offsetWidth; card.classList.add('card-bleed'); }
+              });
+            } catch (err) {
+              showToast('投票失敗，請稍後再試', 'error');
+            }
+          } else if (action === 'copy') {
+            copyText(item.url, '已複製「' + item.name + '」的地圖連結');
+          } else if (action === 'edit') {
+            document.getElementById('editItemId').value = item.id;
+            document.getElementById('editNameInput').value = item.name;
+            document.getElementById('editAddressInput').value = item.address || '';
+            document.getElementById('editUrlInput').value = item.url;
+            openModal('editModal');
+          } else if (action === 'delete') {
+            pendingDeleteId = id;
+            document.getElementById('deleteItemNameText').textContent = item.name;
+            openModal('deleteModal');
+          }
+          return;
+        }
+
+        const card = e.target.closest('article[data-url]');
+        if (card) {
+          const targetUrl = card.getAttribute('data-url');
+          if (targetUrl) window.open(targetUrl, '_blank', 'noopener,noreferrer');
+        }
+      });
+
+      document.getElementById('sortVotesBtn').addEventListener('click', async () => {
+        state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ sortBy: 'votes' }) });
+        render();
+      });
+
+      document.getElementById('sortNewestBtn').addEventListener('click', async () => {
+        state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ sortBy: 'newest' }) });
+        render();
+      });
+
+      document.getElementById('editPollHeaderBtn').addEventListener('click', () => {
+        document.getElementById('pollTitleInput').value = state.title || '';
+        document.getElementById('pollDescInput').value = state.description || '';
+        document.getElementById('pollHeaderDisplay').classList.add('hidden');
+        document.getElementById('editPollHeaderBtn').classList.add('hidden');
+        document.getElementById('pollHeaderEditForm').classList.remove('hidden');
+        document.getElementById('pollTitleInput').focus();
+      });
+
+      document.getElementById('cancelPollEditBtn').addEventListener('click', () => {
+        document.getElementById('pollHeaderEditForm').classList.add('hidden');
+        document.getElementById('pollHeaderDisplay').classList.remove('hidden');
+        document.getElementById('editPollHeaderBtn').classList.remove('hidden');
+      });
+
+      document.getElementById('pollHeaderEditForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('pollTitleInput').value.trim();
+        const description = document.getElementById('pollDescInput').value.trim();
+        if (!title) return;
+        state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ title, description }) });
+        document.getElementById('pollHeaderEditForm').classList.add('hidden');
+        document.getElementById('pollHeaderDisplay').classList.remove('hidden');
+        document.getElementById('editPollHeaderBtn').classList.remove('hidden');
+        render();
+        showToast('已更新標題');
+      });
+
+      document.getElementById('editRestaurantForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = document.getElementById('editItemId').value;
+        const name = document.getElementById('editNameInput').value.trim();
+        const address = document.getElementById('editAddressInput').value.trim();
+        const url = document.getElementById('editUrlInput').value.trim();
+        if (!name || !url) return;
+        const res = await apiFetch('/api/restaurants/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ name, address, url }) });
+        state = res.state;
+        render();
+        closeModal('editModal');
+        showToast('已更新「' + name + '」');
+      });
+
+      document.getElementById('closeEditModalBtn').addEventListener('click', () => closeModal('editModal'));
+      document.getElementById('cancelEditModalBtn').addEventListener('click', () => closeModal('editModal'));
+      document.getElementById('cancelDeleteBtn').addEventListener('click', () => { pendingDeleteId = null; closeModal('deleteModal'); });
+      document.getElementById('confirmDeleteBtn').addEventListener('click', async () => {
+        if (!pendingDeleteId) return;
+        const res = await apiFetch('/api/restaurants/' + encodeURIComponent(pendingDeleteId), { method: 'DELETE' });
+        pendingDeleteId = null;
+        state = res.state;
+        render();
+        closeModal('deleteModal');
+        showToast('已移除該餐廳');
+      });
+
+      document.getElementById('openSettingsBtn').addEventListener('click', () => {
+        document.querySelectorAll('input[name="voteMode"]').forEach(r => { r.checked = (r.value === (state.voteMode || 'multi')); });
+        openModal('settingsModal');
+      });
+      document.getElementById('closeSettingsModalBtn').addEventListener('click', () => closeModal('settingsModal'));
+      document.getElementById('cancelSettingsBtn').addEventListener('click', () => closeModal('settingsModal'));
+      document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const checked = document.querySelector('input[name="voteMode"]:checked');
+        state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ voteMode: checked ? checked.value : 'multi' }) });
+        render();
+        closeModal('settingsModal');
+        showToast('設定已儲存');
+      });
+
+      document.getElementById('clearAllDataBtn').addEventListener('click', async () => {
+        state = await apiFetch('/api/restaurants', { method: 'DELETE' });
+        render();
+        closeModal('settingsModal');
+        showToast('已清空所有餐廳');
+      });
+
+      ['editModal', 'deleteModal', 'settingsModal'].forEach(modalId => {
+        document.getElementById(modalId).addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(modalId); });
+      });
+
+      syncFromServer();
+      setInterval(syncFromServer, 3000);
+    })();
+  </script>
+</body>
+</html>
