@@ -16,7 +16,19 @@
 - 排序（票數 / 最新）、編輯、刪除、複製連結、修改標題與說明、清空所有餐廳
 - 動畫：漣漪點擊、+1 浮字與火花、票數彈跳、卡片光暈、進度條閃光、聚光燈流動背景
 
-## 免設定的資料保存（預設）
+## Supabase 資料庫（目前使用，優先於 Google Sheets）
+
+資料存在 Supabase 的 `poll_state` 資料表（一列 jsonb），Render 重啟、休眠或重新部署都不會消失。
+
+1. 在 Supabase SQL Editor 執行 `schema.sql` 建立資料表（已啟用 RLS，只有伺服器的 secret key 能存取）。
+2. 在 Render → Environment 設定：
+   - `SUPABASE_URL`：專案網址，例如 `https://xxxx.supabase.co`
+   - `SUPABASE_SERVICE_KEY`：Supabase 的 secret key（只放在 Render，**不要提交到 GitHub**）
+3. 打開 `/healthz`，看到 `"storage":"supabase"` 就成功了。
+
+啟動時讀不到資料庫會直接結束並由 Render 重試，**不會用空資料開始**，避免蓋掉既有紀錄；寫入有重試，收到 SIGTERM 時會先存檔。
+
+## 免設定的資料保存（未設定資料庫時）
 
 不設定 Google Sheets 也能長期保存資料：
 

@@ -9,6 +9,9 @@ const { resolveGoogleMapsInput } = require('./maps');
 const PORT = process.env.PORT || 3000;
 const SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT || process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || '';
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || '';
+// Preferred storage: Supabase (SUPABASE_URL + server-only SUPABASE_SERVICE_KEY).
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 // Backup kept on the repo's `data` branch by the GitHub Actions workflow; restored on boot
 // when the local data.json is gone (Render's free disk is wiped on every restart).
 const BACKUP_URLS = (process.env.BACKUP_URL || [
@@ -74,6 +77,48 @@ function createFilePersistence(file) {
     },
     async save(data) {
       fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+    }
+  };
+}
+
+// Supabase Postgres: the whole poll lives in one jsonb row (table public.poll_state, see schema.sql).
+// Uses the server-only secret key over Supabase's REST API; RLS blocks every other client.
+function createSupabasePersistence(baseUrl, key) {
+  const endpoint = baseUrl.replace(/\/+$/, '') + '/rest/v1/poll_state';
+  async function call(url, opts) {
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const res = await fetch(url, {
+          ...opts,
+          signal: AbortSignal.timeout(10000),
+          headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', ...(opts && opts.headers) }
+        });
+        if (res.ok) return res;
+        const text = (await res.text()).slice(0, 200);
+        lastErr = new Error('Supabase HTTP ' + res.status + ': ' + text);
+        if (res.status < 500 && res.status !== 429) throw Object.assign(lastErr, { fatal: true });
+      } catch (err) {
+        if (err.fatal) throw err;
+        lastErr = err;
+      }
+      await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+    }
+    throw lastErr;
+  }
+  return {
+    kind: 'supabase',
+    async load() {
+      const rows = await (await call(endpoint + '?id=eq.1&select=data')).json();
+      if (!rows.length || !rows[0].data) return null; // brand-new table
+      return normalizeData(rows[0].data);
+    },
+    async save(data) {
+      await call(endpoint, {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({ id: 1, data, updated_at: new Date().toISOString() })
+      });
     }
   };
 }
@@ -277,9 +322,10 @@ function createStore(persistence) {
   };
 }
 
-const store = createStore(SERVICE_ACCOUNT && SHEET_ID
-  ? createSheetsPersistence(SERVICE_ACCOUNT, SHEET_ID)
-  : createFilePersistence(DATA_FILE));
+const store = createStore(
+  SUPABASE_URL && SUPABASE_KEY ? createSupabasePersistence(SUPABASE_URL, SUPABASE_KEY)
+    : SERVICE_ACCOUNT && SHEET_ID ? createSheetsPersistence(SERVICE_ACCOUNT, SHEET_ID)
+    : createFilePersistence(DATA_FILE));
 
 // ---------------- HTTP (built-in, zero dependencies) ----------------
 
