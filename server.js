@@ -1,53 +1,237 @@
-const http = require('http');
-const https = require('https');
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const http = require('http');
+const { resolveGoogleMapsInput } = require('./maps');
 
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'data.json');
-const PUBLIC_HTML = path.join(__dirname, 'public', 'index.html');
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+const SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT || process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || '';
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || '';
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
+// Voter IDs are never stored in plain form: only a salted SHA-256 hash.
+const VOTER_SALT = process.env.VOTER_SALT || 'restaurant-vote-default-salt';
 
 const DEFAULT_STATE = {
   title: '這週末聚餐去哪吃？',
   description: '貼上或拖曳 Google Maps 連結，點擊卡片可直接開啟地圖，右側匿名投票',
   voteMode: 'multi',
-  sortBy: 'votes',
-  restaurants: []
+  sortBy: 'votes'
 };
 
-// In-memory state backed by persistent data.json on disk
-let state = loadStateFromDisk();
+function hashVoter(voterId) {
+  return crypto.createHash('sha256').update(VOTER_SALT + ':' + voterId).digest('hex');
+}
 
-function loadStateFromDisk() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      if (parsed && Array.isArray(parsed.restaurants)) {
-        return parsed;
-      }
+function cleanVoterId(raw) {
+  const v = String(raw || '').trim();
+  return v && v.length <= 100 ? v : '';
+}
+
+// Public view of a restaurant. `voters` only ever contains the requesting
+// browser's own anonymous ID (when it has voted) — nobody can see who voted for what.
+function publicItem(r, voterId, voterHashes) {
+  const mine = !!voterId && voterHashes.includes(hashVoter(voterId));
+  return {
+    id: r.id, name: r.name, address: r.address || '', url: r.url,
+    votes: voterHashes.length, voters: mine ? [voterId] : [], createdAt: Number(r.createdAt)
+  };
+}
+
+// ---------------- Storage ----------------
+// All data lives in memory for fast reads and is persisted to a backend:
+// Google Sheets (when GOOGLE_SERVICE_ACCOUNT + GOOGLE_SHEET_ID are set) or a local data.json file.
+// Each restaurant: { id, name, address, url, createdAt, ballots: [{ h: voterHash, t: timestamp }] }
+
+function emptyData() {
+  return { ...DEFAULT_STATE, restaurants: [] };
+}
+
+// Accept both our format and the original server's data.json format (plain voter IDs → hashed).
+function normalizeData(parsed) {
+  const data = { ...DEFAULT_STATE, ...(parsed || {}) };
+  data.restaurants = (Array.isArray(data.restaurants) ? data.restaurants : []).map(r => ({
+    id: String(r.id), name: String(r.name || ''), address: String(r.address || ''), url: String(r.url || ''),
+    createdAt: Number(r.createdAt) || Date.now(),
+    ballots: Array.isArray(r.ballots) ? r.ballots : (Array.isArray(r.voters) ? r.voters.map(v => ({ h: hashVoter(v), t: 0 })) : [])
+  }));
+  return data;
+}
+
+function createFilePersistence(file) {
+  return {
+    kind: 'file',
+    async load() {
+      if (!fs.existsSync(file)) return null;
+      return normalizeData(JSON.parse(fs.readFileSync(file, 'utf8')));
+    },
+    async save(data) {
+      fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
     }
-  } catch (err) {
-    console.error('Failed to read data.json, using default state:', err.message);
-  }
-  return JSON.parse(JSON.stringify(DEFAULT_STATE));
+  };
 }
 
-function saveStateToDisk() {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Failed to write data.json:', err.message);
-  }
+const TAB_POLL = '投票設定';
+const TAB_RESTAURANTS = '候選餐廳';
+const TAB_VOTES = '投票紀錄';
+const range = (tab, cols) => "'" + tab + "'!" + cols;
+
+function createSheetsPersistence(serviceAccount, sheetId) {
+  const { createSheetsClient } = require('./sheets');
+  const client = createSheetsClient(serviceAccount);
+  const lastRows = { [TAB_POLL]: 0, [TAB_RESTAURANTS]: 0, [TAB_VOTES]: 0 };
+  const fmt = ms => (ms ? new Date(Number(ms)).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false }) : '');
+
+  return {
+    kind: 'google-sheets',
+    clientEmail: client.clientEmail,
+    async init() {
+      const meta = await client.meta(sheetId);
+      const have = new Set((meta.sheets || []).map(sh => sh.properties.title));
+      const add = [TAB_POLL, TAB_RESTAURANTS, TAB_VOTES].filter(t => !have.has(t)).map(title => ({ addSheet: { properties: { title } } }));
+      if (add.length) await client.batchUpdate(sheetId, add);
+    },
+    async load() {
+      const res = await client.batchGet(sheetId, [range(TAB_POLL, 'A:B'), range(TAB_RESTAURANTS, 'A:E'), range(TAB_VOTES, 'A:C')]);
+      const [pollRows, restRows, voteRows] = (res.valueRanges || []).map(v => v.values || []);
+      lastRows[TAB_POLL] = pollRows.length; lastRows[TAB_RESTAURANTS] = restRows.length; lastRows[TAB_VOTES] = voteRows.length;
+      if (!pollRows.length && !restRows.length) return null; // brand-new sheet
+      const data = emptyData();
+      for (const [k, v] of pollRows.slice(1)) {
+        if (k === 'title' && String(v || '').trim()) data.title = String(v);
+        if (k === 'description') data.description = String(v == null ? '' : v);
+        if (k === 'voteMode' && (v === 'multi' || v === 'single')) data.voteMode = v;
+        if (k === 'sortBy' && (v === 'votes' || v === 'newest')) data.sortBy = v;
+      }
+      const byId = new Map();
+      for (const row of restRows.slice(1)) {
+        const [id, name, address, url, createdAt] = row;
+        if (!id || !url) continue;
+        const r = { id: String(id), name: String(name || '未命名餐廳'), address: String(address == null ? '' : address), url: String(url), createdAt: Number(createdAt) || Date.now(), ballots: [] };
+        byId.set(r.id, r);
+        data.restaurants.push(r);
+      }
+      for (const [rid, h, t] of voteRows.slice(1)) {
+        const r = byId.get(String(rid));
+        if (r && h && !r.ballots.some(b => b.h === h)) r.ballots.push({ h: String(h), t: Number(t) || 0 });
+      }
+      return data;
+    },
+    async save(data) {
+      const pad = (tab, rows, width) => {
+        const out = rows.slice();
+        while (out.length < lastRows[tab]) out.push(new Array(width).fill(''));
+        lastRows[tab] = rows.length;
+        return out;
+      };
+      const pollRows = [
+        ['設定', '值'],
+        ['title', data.title], ['description', data.description], ['voteMode', data.voteMode], ['sortBy', data.sortBy]
+      ];
+      const restRows = [['id', '餐廳名稱', '地址', 'Google Maps 連結', '建立時間戳(ms)', '票數', '建立時間']]
+        .concat(data.restaurants.map(r => [r.id, r.name, r.address, r.url, r.createdAt, r.ballots.length, fmt(r.createdAt)]));
+      const voteRows = [['餐廳 id', '匿名投票者（雜湊）', '時間戳(ms)', '餐廳名稱', '投票時間']];
+      for (const r of data.restaurants) for (const b of r.ballots) voteRows.push([r.id, b.h, b.t, r.name, fmt(b.t)]);
+      await client.batchWrite(sheetId, [
+        { range: range(TAB_POLL, 'A1'), values: pad(TAB_POLL, pollRows, 2) },
+        { range: range(TAB_RESTAURANTS, 'A1'), values: pad(TAB_RESTAURANTS, restRows, 7) },
+        { range: range(TAB_VOTES, 'A1'), values: pad(TAB_VOTES, voteRows, 5) }
+      ]);
+    }
+  };
 }
 
-function sendJson(res, statusCode, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
-  res.end(body);
+function createStore(persistence) {
+  let data = emptyData();
+  let version = 0;        // bumps on every change
+  let savedVersion = 0;   // last version persisted
+  let saving = null;
+  let timer = null;
+
+  async function flush() {
+    if (saving) return saving;
+    if (savedVersion === version) return;
+    const target = version;
+    const snapshot = JSON.parse(JSON.stringify(data));
+    saving = persistence.save(snapshot)
+      .then(() => { savedVersion = Math.max(savedVersion, target); })
+      .catch(err => { console.error('Save failed (will retry):', err.message); scheduleSave(5000); })
+      .finally(() => { saving = null; if (savedVersion < version) scheduleSave(); });
+    return saving;
+  }
+
+  function scheduleSave(delay) {
+    if (timer) return;
+    timer = setTimeout(() => { timer = null; flush(); }, delay == null ? 800 : delay);
+  }
+
+  const changed = () => { version++; scheduleSave(); };
+  const find = id => data.restaurants.find(r => r.id === id);
+
+  return {
+    kind: persistence.kind,
+    persistence,
+    async init() {
+      if (persistence.init) await persistence.init();
+      const loaded = await persistence.load();
+      if (loaded) data = loaded;
+      else { version++; await flush(); } // write defaults to a brand-new backend
+      savedVersion = version;
+    },
+    // Pick up edits made directly in the spreadsheet, only when nothing is pending.
+    async reload() {
+      if (saving || timer || savedVersion !== version) return;
+      const v = version;
+      const loaded = await persistence.load();
+      if (loaded && v === version && !saving && !timer) data = loaded;
+    },
+    flush: async () => { if (timer) { clearTimeout(timer); timer = null; } await flush(); if (saving) await saving; },
+    async getState(voterId) {
+      const vh = voterId ? hashVoter(voterId) : '';
+      return {
+        title: data.title, description: data.description, voteMode: data.voteMode, sortBy: data.sortBy,
+        restaurants: data.restaurants.map(r => {
+          const mine = !!vh && r.ballots.some(b => b.h === vh);
+          return { id: r.id, name: r.name, address: r.address, url: r.url, votes: r.ballots.length, voters: mine ? [voterId] : [], createdAt: r.createdAt };
+        })
+      };
+    },
+    async updatePoll(f) { Object.assign(data, f); changed(); },
+    async addRestaurant(r) { data.restaurants.unshift({ ...r, ballots: [] }); changed(); },
+    async clearRestaurants() { data.restaurants = []; changed(); },
+    async updateRestaurant(id, f) { const r = find(id); if (!r) return false; Object.assign(r, f); changed(); return true; },
+    async deleteRestaurant(id) {
+      const n = data.restaurants.length;
+      data.restaurants = data.restaurants.filter(r => r.id !== id);
+      if (data.restaurants.length === n) return false;
+      changed(); return true;
+    },
+    async toggleVote(id, voterId) {
+      const target = find(id);
+      if (!target) return null;
+      const vh = hashVoter(voterId);
+      const had = target.ballots.some(b => b.h === vh);
+      if (data.voteMode === 'single') data.restaurants.forEach(r => { r.ballots = r.ballots.filter(b => b.h !== vh); });
+      else target.ballots = target.ballots.filter(b => b.h !== vh);
+      if (!had) target.ballots.push({ h: vh, t: Date.now() });
+      changed();
+      return !had;
+    }
+  };
+}
+
+const store = createStore(SERVICE_ACCOUNT && SHEET_ID
+  ? createSheetsPersistence(SERVICE_ACCOUNT, SHEET_ID)
+  : createFilePersistence(DATA_FILE));
+
+// ---------------- HTTP (built-in, zero dependencies) ----------------
+
+const PUBLIC_HTML = path.join(__dirname, 'public', 'index.html');
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(payload));
 }
 
 function readJsonBody(req) {
@@ -55,376 +239,129 @@ function readJsonBody(req) {
     let raw = '';
     req.on('data', chunk => {
       raw += chunk;
-      if (raw.length > 1e6) {
-        req.destroy();
-        reject(new Error('Payload too large'));
-      }
+      if (raw.length > 1e6) { req.destroy(); reject(Object.assign(new Error('Payload too large'), { status: 413 })); }
     });
     req.on('end', () => {
-      try {
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch (err) {
-        reject(new Error('Invalid JSON'));
-      }
+      try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(Object.assign(new Error('Invalid JSON'), { status: 400 })); }
     });
     req.on('error', reject);
   });
 }
 
-// Follow HTTP/HTTPS redirects server-side (e.g. maps.app.goo.gl -> google.com/maps/place/...)
-function fetchWithRedirects(targetUrl, maxRedirects = 6) {
-  return new Promise((resolve, reject) => {
-    let currentUrl = targetUrl;
-    let hops = 0;
-
-    function requestOnce(urlStr) {
-      let parsed;
-      try {
-        parsed = new URL(urlStr);
-      } catch (e) {
-        return reject(new Error('Invalid URL'));
-      }
-      const lib = parsed.protocol === 'https:' ? https : http;
-      const req = lib.get(urlStr, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; RestaurantVoteBot/1.0)',
-          'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8'
-        },
-        timeout: 6000
-      }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && hops < maxRedirects) {
-          hops += 1;
-          const nextUrl = new URL(res.headers.location, urlStr).toString();
-          res.resume();
-          currentUrl = nextUrl;
-          return requestOnce(nextUrl);
-        }
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', chunk => {
-          if (body.length < 150000) body += chunk;
-        });
-        res.on('end', () => resolve({ finalUrl: currentUrl, html: body }));
-      });
-
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ finalUrl: currentUrl, html: '' });
-      });
-      req.on('error', () => resolve({ finalUrl: currentUrl, html: '' }));
-    }
-
-    requestOnce(currentUrl);
-  });
+// Small in-memory rate limiter for write requests.
+const hits = new Map();
+function rateLimited(req) {
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const key = fwd || req.socket.remoteAddress || 'x', now = Date.now();
+  const rec = hits.get(key) || { n: 0, t: now };
+  if (now - rec.t > 60000) { rec.n = 0; rec.t = now; }
+  rec.n++; hits.set(key, rec);
+  return rec.n > 120;
 }
+setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now - v.t > 120000) hits.delete(k); }, 60000).unref();
 
-function parseCoordinates(urlStr) {
-  const exact = urlStr.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
-  if (exact) return { lat: parseFloat(exact[1]), lng: parseFloat(exact[2]) };
-  const at = urlStr.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-  if (at) return { lat: parseFloat(at[1]), lng: parseFloat(at[2]) };
-  return null;
-}
+async function handle(req, res) {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const m = req.method;
 
-function extractMetaTag(html, attrName, attrValue) {
-  if (!html) return '';
-  const regex = new RegExp(
-    `<meta[^>]+${attrName}=["']${attrValue}["'][^>]+content=["']([^"']+)["']|<meta[^>]+content=["']([^"']+)["'][^>]+${attrName}=["']${attrValue}["']`,
-    'i'
-  );
-  const m = html.match(regex);
-  return m ? decodeHtmlEntities((m[1] || m[2] || '').trim()) : '';
-}
-
-function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
-}
-
-function parseNameFromUrl(urlStr) {
-  try {
-    const u = new URL(urlStr);
-    const decodedPath = decodeURIComponent(u.pathname);
-    const placeMatch = decodedPath.match(/\/place\/([^/@]+)/);
-    if (placeMatch && placeMatch[1]) {
-      return placeMatch[1].replace(/\+/g, ' ').trim();
-    }
-    const q = u.searchParams.get('query') || u.searchParams.get('q') || u.searchParams.get('name');
-    if (q && q.trim().length > 1) return q.replace(/\+/g, ' ').trim();
-  } catch (e) {
-    // Ignore
+  if (m === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(fs.readFileSync(PUBLIC_HTML, 'utf8'));
   }
-  return '';
-}
+  if (m === 'GET' && pathname === '/healthz') return sendJson(res, 200, { ok: true, storage: store.kind });
+  if (!pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
+  if (m !== 'GET' && rateLimited(req)) return sendJson(res, 429, { error: '操作太頻繁，請稍後再試' });
 
-function fetchJsonHttps(urlStr) {
-  return new Promise(resolve => {
-    const req = https.get(urlStr, {
-      headers: { 'User-Agent': 'RestaurantVoteApp/1.0' },
-      timeout: 5000
-    }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          resolve(null);
-        }
-      });
-    });
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
-  });
-}
+  const body = (m === 'GET' || m === 'HEAD') ? {} : await readJsonBody(req);
+  const voterId = cleanVoterId(req.headers['x-voter-id'] || body.voterId);
+  const state = () => store.getState(voterId);
 
-async function lookupWithGooglePlacesApi(query, coords) {
-  if (!GOOGLE_MAPS_API_KEY || !query) return null;
-  let endpoint = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=' +
-    encodeURIComponent(query) +
-    '&inputtype=textquery&language=zh-TW&fields=name,formatted_address&key=' +
-    encodeURIComponent(GOOGLE_MAPS_API_KEY);
-  if (coords) {
-    endpoint += `&locationbias=point:${coords.lat},${coords.lng}`;
+  if (m === 'GET' && pathname === '/api/state') return sendJson(res, 200, await state());
+
+  if (m === 'PATCH' && pathname === '/api/poll') {
+    const f = {};
+    if (typeof body.title === 'string' && body.title.trim()) f.title = body.title.trim().slice(0, 80);
+    if (typeof body.description === 'string') f.description = body.description.trim().slice(0, 140);
+    if (body.voteMode === 'multi' || body.voteMode === 'single') f.voteMode = body.voteMode;
+    if (body.sortBy === 'votes' || body.sortBy === 'newest') f.sortBy = body.sortBy;
+    await store.updatePoll(f);
+    return sendJson(res, 200, await state());
   }
-  const data = await fetchJsonHttps(endpoint);
-  if (data && data.candidates && data.candidates[0]) {
-    return {
-      name: data.candidates[0].name || '',
-      address: data.candidates[0].formatted_address || ''
+
+  if (m === 'DELETE' && pathname === '/api/restaurants') {
+    await store.clearRestaurants();
+    return sendJson(res, 200, await state());
+  }
+
+  if (m === 'POST' && pathname === '/api/restaurants') {
+    const resolved = await resolveGoogleMapsInput(body.input || body.url || '');
+    if (!resolved) return sendJson(res, 400, { error: '請輸入有效的 Google Maps 連結' });
+    const item = {
+      id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      name: String(resolved.name).slice(0, 200),
+      address: String(resolved.address || '').slice(0, 300),
+      url: String(resolved.url).slice(0, 2000),
+      createdAt: Date.now()
     };
+    await store.addRestaurant(item);
+    return sendJson(res, 201, { item: { ...item, votes: 0, voters: [] }, state: await state() });
   }
-  return null;
+
+  const voteMatch = pathname.match(/^\/api\/restaurants\/([^/]+)\/vote$/);
+  if (m === 'POST' && voteMatch) {
+    if (!voterId) return sendJson(res, 400, { error: 'Missing voterId' });
+    const addedVote = await store.toggleVote(decodeURIComponent(voteMatch[1]), voterId);
+    if (addedVote === null) return sendJson(res, 404, { error: 'Restaurant not found' });
+    return sendJson(res, 200, { addedVote, state: await state() });
+  }
+
+  const itemMatch = pathname.match(/^\/api\/restaurants\/([^/]+)$/);
+  if (itemMatch) {
+    const id = decodeURIComponent(itemMatch[1]);
+    if (m === 'PATCH') {
+      const f = {};
+      if (typeof body.name === 'string' && body.name.trim()) f.name = body.name.trim().slice(0, 60);
+      if (typeof body.address === 'string') f.address = body.address.trim().slice(0, 120);
+      if (typeof body.url === 'string' && body.url.trim()) f.url = body.url.trim().slice(0, 2000);
+      if (!(await store.updateRestaurant(id, f))) return sendJson(res, 404, { error: 'Restaurant not found' });
+      const s = await state();
+      return sendJson(res, 200, { item: s.restaurants.find(r => r.id === id), state: s });
+    }
+    if (m === 'DELETE') {
+      if (!(await store.deleteRestaurant(id))) return sendJson(res, 404, { error: 'Restaurant not found' });
+      return sendJson(res, 200, { state: await state() });
+    }
+  }
+
+  return sendJson(res, 404, { error: 'Not found' });
 }
 
-async function reverseGeocodeNominatim(coords) {
-  if (!coords) return '';
-  const endpoint = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(coords.lat)}&lon=${encodeURIComponent(coords.lng)}&accept-language=zh-TW`;
-  const data = await fetchJsonHttps(endpoint);
-  if (!data || !data.address) return '';
-  const a = data.address;
-  const parts = [
-    a.postcode || '',
-    a.city || a.county || '',
-    a.town || a.suburb || a.city_district || '',
-    a.village || a.neighbourhood || '',
-    a.road || '',
-    a.house_number ? `${a.house_number}號` : ''
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join('') : '';
-}
-
-async function resolveGoogleMapsInput(rawInput) {
-  const text = String(rawInput || '').trim();
-  const urlMatch = text.match(/https?:\/\/[^\s]+/i);
-  let url = urlMatch ? urlMatch[0].replace(/[),.;]+$/, '') : '';
-  if (!url && /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(text)) {
-    url = 'https://' + text.split(/\s+/)[0];
-  }
-  if (!url) return null;
-
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(url);
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null;
-  } catch (e) {
-    return null;
-  }
-
-  // Extract any lines pasted alongside the URL
-  const extraLines = text
-    .replace(url, '')
-    .split(/\r?\n/)
-    .map(l => l.trim())
-    .filter(Boolean);
-
-  let name = extraLines[0] || parseNameFromUrl(url);
-  let address = extraLines.length >= 2 ? extraLines.slice(1).join(' ') : '';
-  let finalUrl = url;
-
-  // Expand short links or fetch metadata server-side when needed
-  const host = parsedUrl.hostname.replace(/^www\./, '');
-  const isShortMap = host === 'maps.app.goo.gl' || host === 'goo.gl';
-  if (isShortMap || !name) {
-    const resolved = await fetchWithRedirects(url);
-    finalUrl = resolved.finalUrl || url;
-    if (!name) {
-      name = parseNameFromUrl(finalUrl);
-    }
-    if (!name && resolved.html) {
-      const ogTitle = extractMetaTag(resolved.html, 'property', 'og:title');
-      if (ogTitle) {
-        const cleaned = ogTitle.split('·')[0].replace(/\s*-\s*Google\s*(Maps|地圖)\s*$/i, '').trim();
-        if (cleaned && !/^Google\s*(Maps|地圖)$/i.test(cleaned)) {
-          name = cleaned;
-        }
-      }
-    }
-    if (!address && resolved.html) {
-      const ogTitle = extractMetaTag(resolved.html, 'property', 'og:title');
-      if (ogTitle && ogTitle.includes('·')) {
-        address = ogTitle.split('·').slice(1).join(' ').trim();
-      }
-    }
-  }
-
-  const coords = parseCoordinates(finalUrl) || parseCoordinates(url);
-
-  // If server has GOOGLE_MAPS_API_KEY configured, enrich name & formatted_address via Google Places API
-  if (GOOGLE_MAPS_API_KEY && name) {
-    const placeInfo = await lookupWithGooglePlacesApi(name, coords);
-    if (placeInfo) {
-      if (placeInfo.name) name = placeInfo.name;
-      if (placeInfo.address) address = placeInfo.address;
-    }
-  }
-
-  if (!address && coords) {
-    address = await reverseGeocodeNominatim(coords);
-  }
-
-  if (!name) {
-    name = host === 'maps.app.goo.gl' ? 'Google Maps 餐廳' : host;
-  }
-
-  return { name, address, url: finalUrl };
-}
-
-const server = http.createServer(async (req, res) => {
-  const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = reqUrl.pathname;
-
-  try {
-    // Serve frontend
-    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-      const html = fs.readFileSync(PUBLIC_HTML, 'utf8');
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(html);
-    }
-
-    // GET /api/state
-    if (req.method === 'GET' && pathname === '/api/state') {
-      return sendJson(res, 200, state);
-    }
-
-    // PATCH /api/poll (title, description, voteMode, sortBy)
-    if (req.method === 'PATCH' && pathname === '/api/poll') {
-      const body = await readJsonBody(req);
-      if (typeof body.title === 'string' && body.title.trim()) state.title = body.title.trim().slice(0, 80);
-      if (typeof body.description === 'string') state.description = body.description.trim().slice(0, 140);
-      if (body.voteMode === 'multi' || body.voteMode === 'single') state.voteMode = body.voteMode;
-      if (body.sortBy === 'votes' || body.sortBy === 'newest') state.sortBy = body.sortBy;
-      saveStateToDisk();
-      return sendJson(res, 200, state);
-    }
-
-    // DELETE /api/restaurants (clear all)
-    if (req.method === 'DELETE' && pathname === '/api/restaurants') {
-      state.restaurants = [];
-      saveStateToDisk();
-      return sendJson(res, 200, state);
-    }
-
-    // POST /api/restaurants (resolve Google Maps URL & persist)
-    if (req.method === 'POST' && pathname === '/api/restaurants') {
-      const body = await readJsonBody(req);
-      const resolved = await resolveGoogleMapsInput(body.input || body.url || '');
-      if (!resolved) {
-        return sendJson(res, 400, { error: '請輸入有效的 Google Maps 連結' });
-      }
-      const newItem = {
-        id: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-        name: resolved.name,
-        address: resolved.address || '',
-        url: resolved.url,
-        votes: 0,
-        voters: [],
-        createdAt: Date.now()
-      };
-      state.restaurants.unshift(newItem);
-      saveStateToDisk();
-      return sendJson(res, 201, { item: newItem, state });
-    }
-
-    // POST /api/restaurants/:id/vote
-    const voteMatch = pathname.match(/^\/api\/restaurants\/([^/]+)\/vote$/);
-    if (req.method === 'POST' && voteMatch) {
-      const id = decodeURIComponent(voteMatch[1]);
-      const body = await readJsonBody(req);
-      const voterId = String(body.voterId || '').trim();
-      if (!voterId) return sendJson(res, 400, { error: 'Missing voterId' });
-
-      const target = state.restaurants.find(r => r.id === id);
-      if (!target) return sendJson(res, 404, { error: 'Restaurant not found' });
-
-      if (!Array.isArray(target.voters)) target.voters = [];
-      const hasVoted = target.voters.includes(voterId);
-      let addedVote = false;
-
-      if (state.voteMode === 'single') {
-        state.restaurants.forEach(r => {
-          if (!Array.isArray(r.voters)) r.voters = [];
-          const idx = r.voters.indexOf(voterId);
-          if (idx !== -1) {
-            r.voters.splice(idx, 1);
-            r.votes = Math.max(0, (r.votes || 0) - 1);
-          }
-        });
-        if (!hasVoted) {
-          target.voters.push(voterId);
-          target.votes = (target.votes || 0) + 1;
-          addedVote = true;
-        }
-      } else {
-        if (hasVoted) {
-          target.voters = target.voters.filter(v => v !== voterId);
-          target.votes = Math.max(0, (target.votes || 0) - 1);
-        } else {
-          target.voters.push(voterId);
-          target.votes = (target.votes || 0) + 1;
-          addedVote = true;
-        }
-      }
-
-      saveStateToDisk();
-      return sendJson(res, 200, { addedVote, state });
-    }
-
-    // PATCH or DELETE /api/restaurants/:id
-    const itemMatch = pathname.match(/^\/api\/restaurants\/([^/]+)$/);
-    if (itemMatch) {
-      const id = decodeURIComponent(itemMatch[1]);
-      const item = state.restaurants.find(r => r.id === id);
-      if (!item) return sendJson(res, 404, { error: 'Restaurant not found' });
-
-      if (req.method === 'PATCH') {
-        const body = await readJsonBody(req);
-        if (typeof body.name === 'string' && body.name.trim()) item.name = body.name.trim().slice(0, 60);
-        if (typeof body.address === 'string') item.address = body.address.trim().slice(0, 120);
-        if (typeof body.url === 'string' && body.url.trim()) item.url = body.url.trim();
-        saveStateToDisk();
-        return sendJson(res, 200, { item, state });
-      }
-
-      if (req.method === 'DELETE') {
-        state.restaurants = state.restaurants.filter(r => r.id !== id);
-        saveStateToDisk();
-        return sendJson(res, 200, { state });
-      }
-    }
-
-    sendJson(res, 404, { error: 'Not found' });
-  } catch (err) {
-    sendJson(res, 500, { error: err.message || 'Internal Server Error' });
-  }
+const server = http.createServer((req, res) => {
+  handle(req, res).catch(err => {
+    const status = err.status || 500;
+    if (status >= 500) console.error(err);
+    if (!res.headersSent) sendJson(res, status, { error: status >= 500 ? 'Internal Server Error' : err.message });
+  });
 });
 
-server.listen(PORT, () => {
-  console.log(`Restaurant Vote Server running on http://localhost:${PORT}`);
-});
+store.init()
+  .then(() => {
+    server.listen(PORT, () => console.log('Restaurant Vote Server running on :' + PORT + ' (storage: ' + store.kind + ')'));
+    if (store.kind === 'google-sheets') {
+      setInterval(() => store.reload().catch(e => console.error('Reload failed:', e.message)), 60000).unref();
+    }
+  })
+  .catch(err => {
+    console.error('Storage init failed:', err.message);
+    if (store.persistence.clientEmail) console.error('Make sure the spreadsheet is shared (Editor) with ' + store.persistence.clientEmail);
+    process.exit(1);
+  });
+
+// Persist pending changes before Render stops / sleeps the instance.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    server.close();
+    store.flush().catch(() => {}).finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 8000).unref();
+  });
+}

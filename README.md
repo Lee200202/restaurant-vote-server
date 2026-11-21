@@ -1,19 +1,62 @@
-# 聚餐投票所 — 完整前後端版本（支援多人同步記憶 & Google Maps 連結解析）
+# 聚餐投票所 — 匿名餐廳投票（Google Sheets 雲端資料庫版）
 
-這個專案**不需要安裝任何外部套件（零依賴）**，內建：
-1. **後端持久化記憶（`data.json`）**：所有新增的餐廳、編輯內容與匿名票數都會即時寫入伺服器記憶體與 `data.json`，重新整理或不同裝置打開都會即時同步看到最新狀態。
-2. **伺服器端 Google Maps 連結解析**：自動追蹤 `maps.app.goo.gl` 短網址轉址、擷取餐廳名稱與座標地址；若設定環境變數 `GOOGLE_MAPS_API_KEY`，會直接透過官方 **Google Places API** 補齊最精準的店名與完整地址（金鑰只存在後端，不會暴露給瀏覽器）。
+多人即時同步的匿名餐廳投票網站。貼上或拖曳 Google Maps 連結就能新增候選餐廳。所有資料都存在 **Google Sheets**：Render 免費版休眠或重新啟動時，資料不會消失，也可以直接打開試算表查看。
 
-## 本機啟動（10 秒測試）
+**零依賴**：只用 Node.js 內建模組，不必 `npm install`。
+
+## 功能
+
+- 貼上或拖曳 Google Maps 連結（支援 `maps.app.goo.gl` 短網址），伺服器會自動擷取餐廳名稱與地址
+  - 連結下方另外貼的兩行文字，會當成店名與地址
+  - 連結裡有座標時，會用 OpenStreetMap 反查地址
+  - 選用：設定 `GOOGLE_MAPS_API_KEY` 後，會透過 Google Places API 補上精準的店名與地址（金鑰只放在後端）
+- **匿名投票**：每個瀏覽器有一組隨機匿名 ID，資料庫只存它的加鹽 SHA-256 雜湊值。API 只會告訴你自己投了哪些餐廳，看不到別人的投票紀錄
+- 投票規則：可複選，或一人一票（隨時可以改投）
+- 每 3 秒同步一次，最高票會顯示在頂部（含得票率、同票並列）
+- 排序（票數 / 最新）、編輯、刪除、複製連結、修改標題與說明、清空所有餐廳
+- 動畫：漣漪點擊、+1 浮字與火花、票數彈跳、卡片光暈、進度條閃光、聚光燈流動背景
+
+## Google Sheets 資料結構
+
+伺服器第一次啟動時會自動建立三個分頁：
+
+| 分頁 | 內容 |
+| --- | --- |
+| `投票設定` | 標題、說明、投票規則（`multi` / `single`）、排序方式 |
+| `候選餐廳` | id、餐廳名稱、地址、Google Maps 連結、建立時間、**票數** |
+| `投票紀錄` | 每一張票：餐廳、匿名投票者雜湊值、投票時間 |
+
+直接在試算表裡修改「投票設定」或「候選餐廳」，約 60 秒內就會同步到網站上。
+
+## 部署到 Render（使用 Google Sheets）
+
+1. **建立試算表**：在 Google Sheets 新增一個空白試算表。網址 `https://docs.google.com/spreadsheets/d/<這一段>/edit` 中間那段就是 `GOOGLE_SHEET_ID`。
+2. **共用給服務帳戶**：按「共用」，把服務帳戶的 email（金鑰 JSON 裡的 `client_email`）加為「**編輯者**」。
+3. **設定 Render 環境變數**（Web Service → Environment）：
+   - `GOOGLE_SHEET_ID`：第 1 步取得的 ID
+   - `GOOGLE_SERVICE_ACCOUNT`：服務帳戶金鑰 JSON 的完整內容（也可以用 base64 編碼後的字串）
+   - `VOTER_SALT`：任意一串隨機文字（匿名雜湊用的鹽，設定後請不要再更改）
+4. 儲存後 Render 會自動重新部署。打開 `/healthz`，看到 `"storage":"google-sheets"` 就成功了。
+
+> 沒設定上面的環境變數時，伺服器會退回使用 `data.json`（Render 免費版重新啟動後，這個檔案的資料會消失）。
+
+## API
+
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| GET | `/api/state` | 取得完整狀態 |
+| PATCH | `/api/poll` | 更新 `title` / `description` / `voteMode` / `sortBy` |
+| POST | `/api/restaurants` | `{ input }` 新增 Google Maps 連結 |
+| DELETE | `/api/restaurants` | 清空所有餐廳 |
+| PATCH | `/api/restaurants/:id` | 編輯 `name` / `address` / `url` |
+| DELETE | `/api/restaurants/:id` | 刪除 |
+| POST | `/api/restaurants/:id/vote` | 投票或取消投票（匿名 ID 放在 `X-Voter-Id` 標頭） |
+| GET | `/healthz` | 健康檢查，會顯示目前使用的儲存方式 |
+
+## 本機開發與測試
+
 ```bash
-node server.js
+npm start                                  # 使用 data.json
+BASE=http://localhost:3000 npm test        # API 冒煙測試
+node test/mock-sheets.js                   # 模擬 Google Sheets API（搭配 SHEETS_API_BASE=http://127.0.0.1:9555）
 ```
-打開瀏覽器前往 `http://localhost:3000` 即可使用。
-
-## 免費部署上線（1–2 天臨時活動）
-將此資料夾上傳到 GitHub 後，匯入以下任一免費平台即可自動部署（啟動指令為 `node server.js`）：
-- **Render**（Web Service）
-- **Zeabur**
-- **Railway**
-
-（選填）若想啟用 Google Maps 官方 Places API，在平台的 **Environment Variables** 新增 `GOOGLE_MAPS_API_KEY=你的金鑰` 即可。

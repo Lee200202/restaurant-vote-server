@@ -1,12 +1,14 @@
 {
   "name": "restaurant-vote-server",
   "version": "1.0.0",
-  "description": "匿名聚餐餐廳投票網站（含後端持久化記憶與 Google Maps 連結解析）",
+  "description": "匿名聚餐餐廳投票網站（Google Sheets 雲端資料庫 + Google Maps 連結解析，零依賴）",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test/smoke.js"
   },
+  "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   }
 }
