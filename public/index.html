@@ -476,16 +476,26 @@
 
       const currentAnonId = getOrCreateAnonId();
 
-      // Served from GitHub Pages (*.github.io): talk to the API server on Render. Otherwise same origin.
-      const API_BASE = /\.github\.io$/.test(location.hostname) ? 'https://restaurant-vote-server.onrender.com' : '';
+      // Backend: Google Apps Script web app bound to the Google Sheet that stores everything.
+      const GAS_URL = 'https://script.google.com/macros/s/AKfycbxoKhSQcJunvy0skwvmVkBTonSmhug_TfCgSLntt18ZhFBJFLjfzMKXML1e8C7vKXXV/exec';
 
+      // Same API paths as before, carried to Apps Script. text/plain POST + plain GET avoid CORS preflight.
       async function apiFetch(path, options) {
-        const res = await fetch(API_BASE + path, Object.assign({
-          headers: { 'Content-Type': 'application/json', 'X-Voter-Id': currentAnonId }
-        }, options || {}));
+        options = options || {};
+        const method = (options.method || 'GET').toUpperCase();
+        let res;
+        if (method === 'GET' && path === '/api/state') {
+          res = await fetch(GAS_URL + '?action=state&voter=' + encodeURIComponent(currentAnonId) + '&t=' + Date.now());
+        } else {
+          res = await fetch(GAS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ method, path, body: options.body ? JSON.parse(options.body) : {}, voterId: currentAnonId })
+          });
+        }
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || '請求失敗');
-        return data;
+        if (!data || data.ok === false) throw new Error((data && data.error) || '請求失敗');
+        return data.result;
       }
 
       async function syncFromServer() {
@@ -909,7 +919,7 @@
       });
 
       syncFromServer();
-      setInterval(syncFromServer, 3000);
+      setInterval(syncFromServer, 5000);
     })();
   </script>
 </body>
