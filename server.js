@@ -9,7 +9,10 @@ const { resolveGoogleMapsInput } = require('./maps');
 const PORT = process.env.PORT || 3000;
 const SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT || process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || '';
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || '';
-// Preferred storage: Supabase (SUPABASE_URL + server-only SUPABASE_SERVICE_KEY).
+// Preferred storage: a Google Sheet through an Apps Script web app (APPS_SCRIPT_URL + APPS_SCRIPT_TOKEN).
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || '';
+const APPS_SCRIPT_TOKEN = process.env.APPS_SCRIPT_TOKEN || '';
+// Alternative: Supabase (SUPABASE_URL + server-only SUPABASE_SERVICE_KEY).
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 // Backup kept on the repo's `data` branch by the GitHub Actions workflow; restored on boot
@@ -120,6 +123,46 @@ function createSupabasePersistence(baseUrl, key) {
         body: JSON.stringify({ id: 1, data, updated_at: new Date().toISOString() })
       });
     }
+  };
+}
+
+// Google Sheets via an Apps Script web app bound to the spreadsheet (see apps-script/Code.gs).
+// No Google Cloud project or service-account key needed; requests carry a shared secret token.
+function createAppsScriptPersistence(url, token) {
+  async function call(payload) {
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        // Apps Script answers POST with a 302 to the result URL; fetch follows it.
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ token, ...payload }),
+          redirect: 'follow',
+          signal: AbortSignal.timeout(30000)
+        });
+        const text = await res.text();
+        let json;
+        try { json = JSON.parse(text); } catch (e) { throw new Error('Apps Script returned non-JSON (HTTP ' + res.status + ')'); }
+        if (json && json.ok) return json;
+        const err = new Error('Apps Script error: ' + ((json && json.error) || res.status));
+        if (json && json.error === 'unauthorized') throw Object.assign(err, { fatal: true });
+        throw err;
+      } catch (err) {
+        if (err.fatal) throw err;
+        lastErr = err;
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+    throw lastErr;
+  }
+  return {
+    kind: 'apps-script-sheets',
+    async load() {
+      const res = await call({ action: 'load' });
+      return res.data ? normalizeData(res.data) : null; // null = brand-new spreadsheet
+    },
+    async save(data) { await call({ action: 'save', data }); }
   };
 }
 
@@ -323,7 +366,8 @@ function createStore(persistence) {
 }
 
 const store = createStore(
-  SUPABASE_URL && SUPABASE_KEY ? createSupabasePersistence(SUPABASE_URL, SUPABASE_KEY)
+  APPS_SCRIPT_URL && APPS_SCRIPT_TOKEN ? createAppsScriptPersistence(APPS_SCRIPT_URL, APPS_SCRIPT_TOKEN)
+    : SUPABASE_URL && SUPABASE_KEY ? createSupabasePersistence(SUPABASE_URL, SUPABASE_KEY)
     : SERVICE_ACCOUNT && SHEET_ID ? createSheetsPersistence(SERVICE_ACCOUNT, SHEET_ID)
     : createFilePersistence(DATA_FILE));
 
@@ -366,7 +410,18 @@ async function handle(req, res) {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   const m = req.method;
 
-  if (m === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+  // CORS: allow the GitHub Pages front end (and nothing else) to call the API from a browser.
+  const origin = req.headers.origin;
+  if (origin && /^https:\/\/lee200202\.github\.io$/i.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Voter-Id');
+    res.setHeader('Access-Control-Max-Age', '86400');
+  }
+  if (m === 'OPTIONS') { res.writeHead(204); return res.end(); }
+
+  if (m === 'GET' && (pathname === '/'|| pathname === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(PUBLIC_HTML, 'utf8'));
   }

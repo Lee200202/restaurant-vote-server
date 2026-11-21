@@ -16,7 +16,26 @@
 - 排序（票數 / 最新）、編輯、刪除、複製連結、修改標題與說明、清空所有餐廳
 - 動畫：漣漪點擊、+1 浮字與火花、票數彈跳、卡片光暈、進度條閃光、聚光燈流動背景
 
-## Supabase 資料庫（目前使用，優先於 Google Sheets）
+## 網站與資料的架構
+
+- **網頁**：GitHub Pages（`public/`，由 `.github/workflows/pages.yml` 自動發布）→ https://lee200202.github.io/restaurant-vote-server/
+- **API**：Render（`node server.js`，只允許上面這個網址跨網域呼叫）
+- **資料**：Google 試算表，經由 Apps Script 網頁應用程式存取（Render 重啟不會掉資料）
+
+### 設定 Google 試算表後端（Apps Script，不需要 Google Cloud 金鑰）
+1. 建一個空白 Google 試算表。
+2. 擴充功能 → Apps Script，貼上 `apps-script/Code.gs`，把 `TOKEN` 改成一串長的隨機字。
+3. 部署 → 新增部署 → 網頁應用程式：執行身分「我」、存取權「所有人」，複製 `…/exec` 網址。
+4. Render → Environment 設定：
+   - `APPS_SCRIPT_URL`：上一步的 `/exec` 網址
+   - `APPS_SCRIPT_TOKEN`：與 `Code.gs` 內相同的 TOKEN
+   - `VOTER_SALT`：任意隨機字串（設定後不要再改）
+5. 打開 Render 網站的 `/healthz`，看到 `"storage":"apps-script-sheets"` 就成功了。
+
+> TOKEN 與 `/exec` 網址等同密碼，請只放在 Apps Script 與 Render，不要提交到 GitHub。
+> 存取優先順序：Apps Script → Supabase → Google 服務帳戶 → `data.json`。
+
+## Supabase 資料庫（選用）
 
 資料存在 Supabase 的 `poll_state` 資料表（一列 jsonb），Render 重啟、休眠或重新部署都不會消失。
 
