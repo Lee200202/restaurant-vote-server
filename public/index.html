@@ -657,6 +657,43 @@
         return list;
       }
 
+      // ---- Keep cards still while someone is about to click them.
+      // The order is frozen while the pointer is over the list (desktop), for a few seconds after
+      // touching it (phones) and after any vote. Vote counts still update live; only positions wait.
+      // New restaurants are added at the end, deleted ones disappear; the re-sort happens once it is safe.
+      const FREEZE_MS = 4000;
+      let frozenOrder = null;   // array of ids
+      let freezeUntil = 0;
+      let pointerInList = false;
+      let unfreezeTimer = null;
+
+      function orderIsFrozen() { return pointerInList || Date.now() < freezeUntil; }
+
+      function freezeFor(ms) {
+        freezeUntil = Math.max(freezeUntil, Date.now() + ms);
+        clearTimeout(unfreezeTimer);
+        unfreezeTimer = setTimeout(maybeUnfreeze, freezeUntil - Date.now() + 50);
+      }
+
+      function maybeUnfreeze() {
+        if (orderIsFrozen()) { if (!pointerInList) freezeFor(0); return; }
+        if (frozenOrder) { frozenOrder = null; render(); }
+      }
+
+      function getDisplayOrder() {
+        const sorted = getSortedRestaurants();
+        if (!orderIsFrozen() || !frozenOrder) {
+          frozenOrder = sorted.map(r => r.id);
+          return sorted;
+        }
+        const pos = new Map(frozenOrder.map((id, i) => [id, i]));
+        const kept = sorted.filter(r => pos.has(r.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id));
+        const added = sorted.filter(r => !pos.has(r.id));
+        const shown = kept.concat(added);
+        frozenOrder = shown.map(r => r.id);
+        return shown;
+      }
+
       function render() {
         document.getElementById('pollTitleText').textContent = state.title || '聚餐投票所';
         document.getElementById('pollDescText').textContent = state.description || '';
@@ -718,8 +755,11 @@
         }
 
         emptyEl.classList.add('hidden');
-        const sorted = getSortedRestaurants();
-        listEl.innerHTML = sorted.map((item, idx) => {
+        // Rank numbers always follow the real ranking, even while card positions are held still.
+        const rankOf = new Map(getSortedRestaurants().map((r, i) => [r.id, i + 1]));
+        const sorted = getDisplayOrder();
+        listEl.innerHTML = sorted.map((item) => {
+          const idx = rankOf.get(item.id) - 1;
           const votes = item.votes || 0;
           const pct = totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
           const isLeader = maxVotes > 0 && votes === maxVotes;
@@ -877,6 +917,12 @@
         }
       });
 
+      const restaurantListEl = document.getElementById('restaurantList');
+      restaurantListEl.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') pointerInList = true; });
+      restaurantListEl.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { pointerInList = false; freezeFor(1500); } });
+      restaurantListEl.addEventListener('pointerdown', () => freezeFor(FREEZE_MS));
+      restaurantListEl.addEventListener('touchstart', () => freezeFor(FREEZE_MS), { passive: true });
+
       document.getElementById('restaurantList').addEventListener('click', async function (e) {
         const btn = e.target.closest('button[data-action]');
         if (btn) {
@@ -890,6 +936,7 @@
             // One request per restaurant at a time: a quick double-click must not take the vote back.
             if (pendingVotes.has(id)) return;
             pendingVotes.add(id);
+            freezeFor(FREEZE_MS);
             setVoteButtonBusy(id, true);
             try {
               const res = await apiFetch('/api/restaurants/' + encodeURIComponent(id) + '/vote', {
@@ -908,6 +955,7 @@
               showToast('投票失敗，請稍後再試', 'error');
             } finally {
               pendingVotes.delete(id);
+              freezeFor(FREEZE_MS); // keep positions still a little longer after the result arrives
               render(); // clear 送出中… and show the result
             }
           } else if (action === 'copy') {
@@ -935,11 +983,13 @@
 
       document.getElementById('sortVotesBtn').addEventListener('click', async () => {
         state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ sortBy: 'votes' }) });
+        frozenOrder = null; freezeUntil = 0; // an explicit sort choice applies right away
         render();
       });
 
       document.getElementById('sortNewestBtn').addEventListener('click', async () => {
         state = await apiFetch('/api/poll', { method: 'PATCH', body: JSON.stringify({ sortBy: 'newest' }) });
+        frozenOrder = null; freezeUntil = 0; // an explicit sort choice applies right away
         render();
       });
 
