@@ -495,27 +495,56 @@
       const GAS_URL = 'https://script.google.com/macros/s/AKfycbxoKhSQcJunvy0skwvmVkBTonSmhug_TfCgSLntt18ZhFBJFLjfzMKXML1e8C7vKXXV/exec';
 
       // Same API paths as before, carried to Apps Script. text/plain POST + plain GET avoid CORS preflight.
+      // Every change (vote, add, edit, delete…) bumps writeSeq when it starts and when it ends.
+      // A background sync that overlapped any change is thrown away, so an older snapshot can
+      // never replace what this browser just did on screen.
+      let writeSeq = 0;
+      let writesInFlight = 0;
+
+      // Restaurants whose vote request is still on its way (button shows 送出中… and ignores clicks).
+      const pendingVotes = new Set();
+      function setVoteButtonBusy(id, busy) {
+        const btn = document.querySelector('button[data-action="vote"][data-id="' + CSS.escape(id) + '"]');
+        if (!btn) return;
+        btn.disabled = busy;
+        btn.classList.toggle('opacity-60', busy);
+        btn.classList.toggle('cursor-wait', busy);
+        const label = btn.querySelector('span.text-xs');
+        if (label && busy) label.textContent = '送出中…';
+      }
+
       async function apiFetch(path, options) {
         options = options || {};
         const method = (options.method || 'GET').toUpperCase();
-        let res;
         if (method === 'GET' && path === '/api/state') {
-          res = await fetch(GAS_URL + '?action=state&voter=' + encodeURIComponent(currentAnonId) + '&t=' + Date.now());
-        } else {
-          res = await fetch(GAS_URL, {
+          const res = await fetch(GAS_URL + '?action=state&voter=' + encodeURIComponent(currentAnonId) + '&t=' + Date.now());
+          const data = await res.json();
+          if (!data || data.ok === false) throw new Error((data && data.error) || '請求失敗');
+          return data.result;
+        }
+        writeSeq++;
+        writesInFlight++;
+        try {
+          const res = await fetch(GAS_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({ method, path, body: options.body ? JSON.parse(options.body) : {}, voterId: currentAnonId })
           });
+          const data = await res.json();
+          if (!data || data.ok === false) throw new Error((data && data.error) || '請求失敗');
+          return data.result;
+        } finally {
+          writesInFlight--;
+          writeSeq++;
         }
-        const data = await res.json();
-        if (!data || data.ok === false) throw new Error((data && data.error) || '請求失敗');
-        return data.result;
       }
 
       async function syncFromServer() {
+        if (writesInFlight > 0) return; // a change is on its way; its own response will refresh the view
+        const startedAt = writeSeq;
         try {
           const remote = await apiFetch('/api/state');
+          if (writeSeq !== startedAt || writesInFlight > 0) return; // stale: a change happened meanwhile
           state = remote;
           render();
         } catch (e) {
@@ -696,6 +725,7 @@
           const isLeader = maxVotes > 0 && votes === maxVotes;
           const hasVoted = Array.isArray(item.voters) && item.voters.includes(currentAnonId);
           const isFresh = lastAnimatedId === item.id;
+          const isBusy = pendingVotes.has(item.id);
           const cardStyle = isLeader ? 'border-amber-300/90 bg-gradient-to-r from-amber-50/40 via-white to-white shadow-sm' : 'border-stone-200/90 bg-white shadow-xs';
           const rankBadge = isLeader
             ? '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900"><i data-lucide="crown" class="w-3.5 h-3.5"></i>最高票</span>'
@@ -725,9 +755,9 @@
                     '<span class="text-xs font-semibold text-stone-500 w-9 text-right shrink-0">' + pct + '%</span>' +
                   '</div>' +
                 '</div>' +
-                '<button type="button" data-action="vote" data-id="' + escapeHtml(item.id) + '" class="tactile-surface w-full sm:w-auto sm:min-w-[112px] py-3.5 px-5 rounded-2xl border font-bold flex sm:flex-col items-center justify-center gap-2 sm:gap-1 cursor-pointer shrink-0 ' + voteBtnStyle + '">' +
+                '<button type="button" data-action="vote" data-id="' + escapeHtml(item.id) + '"' + (isBusy ? ' disabled aria-busy="true"' : '') + ' class="tactile-surface w-full sm:w-auto sm:min-w-[112px] py-3.5 px-5 rounded-2xl border font-bold flex sm:flex-col items-center justify-center gap-2 sm:gap-1 shrink-0 ' + (isBusy ? 'opacity-60 cursor-wait ' : 'cursor-pointer ') + voteBtnStyle + '">' +
                   '<div class="flex items-center gap-1.5 text-xl sm:text-2xl leading-none ' + (isFresh ? 'count-pop' : '') + '"><i data-lucide="thumbs-up" class="w-5 h-5"></i><span>' + votes + '</span></div>' +
-                  '<span class="text-xs font-medium opacity-90">' + (hasVoted ? '已投票' : '投一票') + '</span>' +
+                  '<span class="text-xs font-medium opacity-90">' + (isBusy ? '送出中…' : (hasVoted ? '已投票' : '投一票')) + '</span>' +
                 '</button>' +
               '</div>' +
             '</article>'
@@ -857,6 +887,10 @@
           if (!item) return;
 
           if (action === 'vote') {
+            // One request per restaurant at a time: a quick double-click must not take the vote back.
+            if (pendingVotes.has(id)) return;
+            pendingVotes.add(id);
+            setVoteButtonBusy(id, true);
             try {
               const res = await apiFetch('/api/restaurants/' + encodeURIComponent(id) + '/vote', {
                 method: 'POST',
@@ -872,6 +906,9 @@
               });
             } catch (err) {
               showToast('投票失敗，請稍後再試', 'error');
+            } finally {
+              pendingVotes.delete(id);
+              render(); // clear 送出中… and show the result
             }
           } else if (action === 'copy') {
             copyText(item.url, '已複製「' + item.name + '」的地圖連結');
