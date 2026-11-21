@@ -54,6 +54,10 @@ function doGet(e) {
   var p = (e && e.parameter) || {};
   try {
     if (p.action === 'state') return out({ ok: true, result: publicState(loadCached(), cleanVoter(p.voter)) });
+    if (p.action === 'preview') { // resolve a pasted link to its Google Maps name + address (nothing is saved)
+      var pv = resolveGoogleMapsInput(p.input || '');
+      return out(pv ? { ok: true, result: pv } : { ok: false, error: '請輸入有效的 Google Maps 連結' });
+    }
     if (p.action === 'health') {
       var d = loadFromSheet();
       return out({ ok: true, result: { storage: 'google-sheets', restaurants: d.restaurants.length, spreadsheet: SpreadsheetApp.getActive().getName() } });
@@ -77,6 +81,9 @@ function doPost(e) {
   if (method === 'POST' && path === '/api/restaurants') {
     resolved = resolveGoogleMapsInput(body.input || body.url || '');
     if (!resolved) return out({ ok: false, error: '請輸入有效的 Google Maps 連結' });
+    // Name / address confirmed (and possibly corrected) in the page's preview take priority.
+    if (typeof body.name === 'string' && body.name.trim()) resolved.name = body.name.trim().slice(0, 60);
+    if (typeof body.address === 'string' && body.address.trim()) resolved.address = body.address.trim().slice(0, 120);
   }
 
   var lock = LockService.getScriptLock();

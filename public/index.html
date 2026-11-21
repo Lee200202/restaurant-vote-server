@@ -345,6 +345,21 @@
           <span id="submitBtnLabel">新增餐廳</span>
         </button>
       </form>
+      <div id="previewBox" class="hidden mt-4 rounded-2xl border border-teal-200 bg-teal-50/70 p-4 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-semibold text-teal-800">
+          <i data-lucide="map" class="w-4 h-4"></i>
+          <span id="previewStatus">Google 地圖資訊</span>
+        </div>
+        <div id="previewFields" class="grid gap-2 sm:grid-cols-2">
+          <label class="block text-xs text-stone-500">店名
+            <input id="previewName" type="text" maxlength="60" class="mt-1 w-full px-3 py-2 rounded-xl border border-stone-200 bg-white text-sm text-stone-900 outline-none focus:border-orange-500" />
+          </label>
+          <label class="block text-xs text-stone-500">地址
+            <input id="previewAddress" type="text" maxlength="120" class="mt-1 w-full px-3 py-2 rounded-xl border border-stone-200 bg-white text-sm text-stone-900 outline-none focus:border-orange-500" />
+          </label>
+        </div>
+        <p class="text-xs text-stone-500">確認無誤後按「新增餐廳」；店名和地址可以先修改。</p>
+      </div>
     </section>
 
     <!-- Restaurant Leaderboard -->
@@ -732,19 +747,72 @@
         if (el) { el.classList.add('hidden'); el.classList.remove('flex'); }
       }
 
+      // ---- Live preview: show the Google Maps name + address as soon as a link is pasted
+      const previewBox = document.getElementById('previewBox');
+      const previewStatus = document.getElementById('previewStatus');
+      const previewFields = document.getElementById('previewFields');
+      const previewName = document.getElementById('previewName');
+      const previewAddress = document.getElementById('previewAddress');
+      let previewFor = '';     // input text the preview belongs to
+      let previewTimer = null;
+      let previewSeq = 0;
+
+      function hidePreview() { previewBox.classList.add('hidden'); previewFor = ''; }
+
+      async function loadPreview(text) {
+        const seq = ++previewSeq;
+        previewFor = '';
+        previewBox.classList.remove('hidden');
+        previewFields.classList.add('hidden');
+        previewStatus.textContent = '正在從 Google 地圖讀取店名與地址...';
+        try {
+          const res = await fetch(GAS_URL + '?action=preview&input=' + encodeURIComponent(text) + '&t=' + Date.now());
+          const data = await res.json();
+          if (seq !== previewSeq) return; // a newer paste replaced this one
+          if (!data || data.ok === false) throw new Error((data && data.error) || '讀取失敗');
+          previewName.value = data.result.name || '';
+          previewAddress.value = data.result.address || '';
+          previewFor = text;
+          previewStatus.textContent = 'Google 地圖資訊';
+          previewFields.classList.remove('hidden');
+          if (window.lucide) window.lucide.createIcons();
+        } catch (err) {
+          if (seq !== previewSeq) return;
+          previewStatus.textContent = err.message || '無法讀取這個連結';
+        }
+      }
+
+      function schedulePreview(delay) {
+        clearTimeout(previewTimer);
+        const text = document.getElementById('urlInput').value.trim();
+        if (!/https?:\/\/\S+/i.test(text)) { previewSeq++; hidePreview(); return; }
+        if (text === previewFor) return;
+        previewTimer = setTimeout(() => loadPreview(text), delay);
+      }
+
+      document.getElementById('urlInput').addEventListener('input', () => schedulePreview(600));
+      document.getElementById('urlInput').addEventListener('paste', () => setTimeout(() => schedulePreview(0), 0));
+
       async function handleAddInput(rawInput) {
         const btn = document.getElementById('submitRestaurantBtn');
         const label = document.getElementById('submitBtnLabel');
         btn.disabled = true;
-        label.textContent = '解析中...';
+        label.textContent = '新增中...';
         try {
+          const payload = { input: rawInput };
+          if (previewFor && previewFor === String(rawInput).trim()) {
+            payload.name = previewName.value.trim();
+            payload.address = previewAddress.value.trim();
+          }
           const data = await apiFetch('/api/restaurants', {
             method: 'POST',
-            body: JSON.stringify({ input: rawInput })
+            body: JSON.stringify(payload)
           });
           state = data.state;
           lastAnimatedId = data.item.id;
           render();
+          previewSeq++;
+          hidePreview();
           showToast('已加入「' + data.item.name + '」');
           return true;
         } catch (err) {
@@ -772,7 +840,8 @@
         const cleaned = droppedText.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).join('\n');
         if (cleaned) {
           spawnRipple(dropZone, e.clientX, e.clientY, 'rgba(249,115,22,0.25)');
-          await handleAddInput(cleaned);
+          document.getElementById('urlInput').value = cleaned.trim();
+          schedulePreview(0); // show name + address first; the user confirms with 新增餐廳
         } else {
           showToast('請拖曳有效的 Google Maps 連結', 'error');
         }
