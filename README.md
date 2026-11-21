@@ -16,7 +16,17 @@
 - 排序（票數 / 最新）、編輯、刪除、複製連結、修改標題與說明、清空所有餐廳
 - 動畫：漣漪點擊、+1 浮字與火花、票數彈跳、卡片光暈、進度條閃光、聚光燈流動背景
 
-## Google Sheets 資料結構
+## 免設定的資料保存（預設）
+
+不設定 Google Sheets 也能長期保存資料：
+
+1. `.github/workflows/keepalive-backup.yml` 每 5 分鐘呼叫一次網站，讓 Render 免費版不會進入休眠。
+2. 同一個工作也會把所有餐廳、連結和票數備份到這個 repo 的 **`data` 分支**（`state.json`，`README.md` 裡有票數表）。
+3. 伺服器重新啟動後，如果 `data.json` 不見了，就會自動從 `data` 分支還原。
+
+備份只存匿名雜湊值，不含任何個人身分。
+
+## Google Sheets 資料結構（選用）
 
 伺服器第一次啟動時會自動建立三個分頁：
 
@@ -28,7 +38,7 @@
 
 直接在試算表裡修改「投票設定」或「候選餐廳」，約 60 秒內就會同步到網站上。
 
-## 部署到 Render（使用 Google Sheets）
+## 部署到 Render（選用：改用 Google Sheets）
 
 1. **建立試算表**：在 Google Sheets 新增一個空白試算表。網址 `https://docs.google.com/spreadsheets/d/<這一段>/edit` 中間那段就是 `GOOGLE_SHEET_ID`。
 2. **共用給服務帳戶**：按「共用」，把服務帳戶的 email（金鑰 JSON 裡的 `client_email`）加為「**編輯者**」。
@@ -51,6 +61,7 @@
 | PATCH | `/api/restaurants/:id` | 編輯 `name` / `address` / `url` |
 | DELETE | `/api/restaurants/:id` | 刪除 |
 | POST | `/api/restaurants/:id/vote` | 投票或取消投票（匿名 ID 放在 `X-Voter-Id` 標頭） |
+| GET | `/api/backup` | 完整匯出（給備份工作使用） |
 | GET | `/healthz` | 健康檢查，會顯示目前使用的儲存方式 |
 
 ## 本機開發與測試

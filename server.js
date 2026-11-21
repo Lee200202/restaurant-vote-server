@@ -9,6 +9,12 @@ const { resolveGoogleMapsInput } = require('./maps');
 const PORT = process.env.PORT || 3000;
 const SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT || process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || '';
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || '';
+// Backup kept on the repo's `data` branch by the GitHub Actions workflow; restored on boot
+// when the local data.json is gone (Render's free disk is wiped on every restart).
+const BACKUP_URLS = (process.env.BACKUP_URL || [
+  'https://raw.githubusercontent.com/Lee200202/restaurant-vote-server/data/state.json',
+  'https://api.github.com/repos/Lee200202/restaurant-vote-server/contents/state.json?ref=data'
+].join(' ')).split(/\s+/).filter(Boolean);
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 // Voter IDs are never stored in plain form: only a salted SHA-256 hash.
 const VOTER_SALT = process.env.VOTER_SALT || 'restaurant-vote-default-salt';
@@ -166,7 +172,46 @@ function createStore(persistence) {
     timer = setTimeout(() => { timer = null; flush(); }, delay == null ? 800 : delay);
   }
 
-  const changed = () => { version++; scheduleSave(); };
+  // `trusted`: the in-memory data is the real current state (loaded, restored, or changed
+  // since boot). The backup job only overwrites the GitHub backup when this is true, so a
+  // failed restore can never replace a good backup with an empty list.
+  let trusted = false;
+  let lastRestoreTry = 0;
+  let restoring = null;
+
+  async function fetchBackup() {
+    let missing = 0;
+    for (const url of BACKUP_URLS) {
+      try {
+        const res = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), {
+          headers: { Accept: 'application/vnd.github.raw', 'User-Agent': 'restaurant-vote-server' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (res.status === 404) { missing++; continue; }
+        if (!res.ok) continue;
+        const json = await res.json();
+        const payload = json && json.data ? json.data : json;
+        if (payload && Array.isArray(payload.restaurants)) return { data: normalizeData(payload) };
+      } catch (e) { /* try the next URL */ }
+    }
+    return { missing: missing === BACKUP_URLS.length };
+  }
+
+  async function restoreFromBackup() {
+    lastRestoreTry = Date.now();
+    const r = await fetchBackup();
+    if (trusted) return; // a change happened meanwhile; keep it
+    if (r.data) {
+      data = r.data; trusted = true; version++; scheduleSave();
+      console.log('Restored ' + data.restaurants.length + ' restaurants from GitHub backup');
+    } else if (r.missing) {
+      trusted = true; // no backup exists yet: an empty start is genuine
+    } else {
+      console.error('Backup restore failed; will retry');
+    }
+  }
+
+  const changed = () => { version++; trusted = true; scheduleSave(); };
   const find = id => data.restaurants.find(r => r.id === id);
 
   return {
@@ -175,10 +220,21 @@ function createStore(persistence) {
     async init() {
       if (persistence.init) await persistence.init();
       const loaded = await persistence.load();
-      if (loaded) data = loaded;
-      else { version++; await flush(); } // write defaults to a brand-new backend
-      savedVersion = version;
+      if (loaded) { data = loaded; trusted = true; savedVersion = version; return; }
+      if (persistence.kind === 'file' && BACKUP_URLS.length) { await restoreFromBackup(); return; }
+      version++; await flush(); // write defaults to a brand-new backend
+      savedVersion = version; trusted = true;
     },
+    // Called before every request: if the boot-time restore failed, try again (throttled)
+    // so a change never lands on top of an incomplete state.
+    async ensureRestored(force) {
+      if (trusted) return;
+      if (restoring) return restoring;
+      if (!force && Date.now() - lastRestoreTry < 15000) return;
+      restoring = restoreFromBackup().finally(() => { restoring = null; });
+      return restoring;
+    },
+    backup: () => ({ trusted, savedAt: Date.now(), data }),
     // Pick up edits made directly in the spreadsheet, only when nothing is pending.
     async reload() {
       if (saving || timer || savedVersion !== version) return;
@@ -269,6 +325,9 @@ async function handle(req, res) {
     return res.end(fs.readFileSync(PUBLIC_HTML, 'utf8'));
   }
   if (m === 'GET' && pathname === '/healthz') return sendJson(res, 200, { ok: true, storage: store.kind });
+  if (pathname.startsWith('/api/')) await store.ensureRestored(m !== 'GET');
+  // Full export for the GitHub backup job (restaurants, links, anonymous vote hashes).
+  if (m === 'GET' && pathname === '/api/backup') return sendJson(res, 200, store.backup());
   if (!pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
   if (m !== 'GET' && rateLimited(req)) return sendJson(res, 429, { error: '操作太頻繁，請稍後再試' });
 
